@@ -262,8 +262,56 @@ class _StreamingResponseWrapper:
         self._finalized = False
 
     def __getattr__(self, name: str) -> Any:
-        """Forward all unknown attributes to wrapped response."""
+        """Forward unknown attributes to wrapped response.
+
+        NOTE: Python does NOT route dunder/magic methods through __getattr__.
+        All magic methods used by SDKs must be defined explicitly below.
+        """
         return getattr(self._response, name)
+
+    # ── Sync context manager ──────────────────────────────────────────────────
+    # OpenAI/Anthropic SDKs use: with client.stream(...) as response:
+    def __enter__(self) -> "_StreamingResponseWrapper":
+        self._response.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> Any:
+        return self._response.__exit__(*args)
+
+    # ── Async context manager ─────────────────────────────────────────────────
+    # Most async SDKs use: async with client.stream(...) as response:
+    async def __aenter__(self) -> "_StreamingResponseWrapper":
+        await self._response.__aenter__()
+        return self
+
+    async def __aexit__(self, *args: Any) -> Any:
+        return await self._response.__aexit__(*args)
+
+    # ── Sync iteration ────────────────────────────────────────────────────────
+    # for chunk in response:
+    def __iter__(self) -> Iterator[bytes]:
+        try:
+            for chunk in self._response.__iter__():
+                yield chunk
+        finally:
+            self._finalize()
+
+    # ── Async iteration ───────────────────────────────────────────────────────
+    # async for chunk in response:
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._response.__aiter__():
+                self._process_sse_line(chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else str(chunk))
+                yield chunk
+        finally:
+            self._finalize()
+
+    # ── Boolean / repr ────────────────────────────────────────────────────────
+    def __bool__(self) -> bool:
+        return bool(self._response)
+
+    def __repr__(self) -> str:
+        return f"_StreamingResponseWrapper({self._response!r})"
 
     def iter_lines(self) -> Iterator[str]:
         """Sync line iterator — intercepts SSE lines."""
