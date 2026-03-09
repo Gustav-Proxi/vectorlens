@@ -274,7 +274,7 @@ export function useSessions(): UseSessionsReturn {
     // Fetch from server in background
     fetchSessions();
 
-    // Setup polling - fetch every 2s when connected, 1s when trying to connect
+    // Setup polling - fetch every 3s when connected, 1s when trying to connect
     const startPolling = () => {
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -282,7 +282,7 @@ export function useSessions(): UseSessionsReturn {
 
       pollIntervalRef.current = setInterval(async () => {
         await fetchSessions();
-      }, isConnecting ? 1000 : 2000);
+      }, isConnecting ? 1000 : 3000);
     };
 
     startPolling();

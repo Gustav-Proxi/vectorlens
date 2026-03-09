@@ -52,7 +52,32 @@ export function saveSessions(sessions: Session[]): void {
       .sort((a, b) => b.created_at - a.created_at)
       .slice(0, MAX_STORED_SESSIONS);
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    // Size guard before storing
+    const serialized = JSON.stringify(merged);
+    const SIZE_LIMIT = 4 * 1024 * 1024; // 4MB — leave 1MB buffer from 5MB limit
+
+    if (serialized.length > SIZE_LIMIT) {
+      // Too large — store summaries only (strip vector_queries and llm_responses content)
+      const summaries = merged.map(s => ({
+        ...s,
+        // Keep metadata but strip large arrays for storage
+        vector_queries: [] as any[],
+        llm_requests: [] as any[],
+        llm_responses: [] as any[],
+        attributions: [] as any[],
+      }));
+      const summaryStr = JSON.stringify(summaries);
+      if (summaryStr.length <= SIZE_LIMIT) {
+        localStorage.setItem(STORAGE_KEY, summaryStr);
+        console.warn('VectorLens: sessions too large for localStorage, storing summaries only');
+        return;
+      }
+      // Even summaries too large — skip storage entirely
+      console.warn('VectorLens: sessions too large to cache, skipping localStorage');
+      return;
+    }
+
+    localStorage.setItem(STORAGE_KEY, serialized);
   } catch (err) {
     if (err instanceof Error && err.name === 'QuotaExceededError') {
       console.warn('localStorage quota exceeded, removing oldest sessions');

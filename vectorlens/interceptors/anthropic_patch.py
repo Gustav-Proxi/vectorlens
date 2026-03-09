@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
+import threading
 import time
 from typing import Any, Callable
 
@@ -11,51 +13,56 @@ from vectorlens.interceptors.base import BaseInterceptor
 from vectorlens.session_bus import bus
 from vectorlens.types import LLMRequestEvent, LLMResponseEvent
 
+_logger = logging.getLogger(__name__)
+
 
 class AnthropicInterceptor(BaseInterceptor):
     """Patches Anthropic API to record LLM requests and responses."""
 
     def __init__(self) -> None:
         self._installed = False
+        self._install_lock = threading.Lock()
         self._original_create: Callable | None = None
         self._original_acreate: Callable | None = None
 
     def install(self) -> None:
         """Install Anthropic patches."""
-        if self._installed:
-            return
+        with self._install_lock:
+            if self._installed:
+                return
 
-        try:
-            from anthropic.resources.messages import Messages, AsyncMessages
-        except ImportError:
-            return
+            try:
+                from anthropic.resources.messages import Messages, AsyncMessages
+            except ImportError:
+                return
 
-        # Patch sync create (anthropic.Anthropic client)
-        self._original_create = Messages.create
-        Messages.create = self._wrap_create(self._original_create)
+            # Patch sync create (anthropic.Anthropic client)
+            self._original_create = Messages.create
+            Messages.create = self._wrap_create(self._original_create)
 
-        # Patch async create (anthropic.AsyncAnthropic client)
-        self._original_acreate = AsyncMessages.create
-        AsyncMessages.create = self._wrap_acreate(self._original_acreate)
+            # Patch async create (anthropic.AsyncAnthropic client)
+            self._original_acreate = AsyncMessages.create
+            AsyncMessages.create = self._wrap_acreate(self._original_acreate)
 
-        self._installed = True
+            self._installed = True
 
     def uninstall(self) -> None:
         """Restore original Anthropic functions."""
-        if not self._installed:
-            return
+        with self._install_lock:
+            if not self._installed:
+                return
 
-        try:
-            from anthropic.resources.messages import Messages, AsyncMessages
-        except ImportError:
-            return
+            try:
+                from anthropic.resources.messages import Messages, AsyncMessages
+            except ImportError:
+                return
 
-        if self._original_create:
-            Messages.create = self._original_create
-        if self._original_acreate:
-            AsyncMessages.create = self._original_acreate
+            if self._original_create:
+                Messages.create = self._original_create
+            if self._original_acreate:
+                AsyncMessages.create = self._original_acreate
 
-        self._installed = False
+            self._installed = False
 
     def is_installed(self) -> bool:
         """Return True if interceptor is installed."""
@@ -68,7 +75,9 @@ class AnthropicInterceptor(BaseInterceptor):
         def wrapper(self_: Any, **kwargs: Any) -> Any:
             # Extract request parameters
             model = kwargs.get("model", "")
-            messages = kwargs.get("messages", [])
+            messages = kwargs.get("messages") or []
+            if not isinstance(messages, list):
+                messages = []
             temperature = kwargs.get("temperature", 0.7)
             max_tokens = kwargs.get("max_tokens", 1024)
 
@@ -82,21 +91,24 @@ class AnthropicInterceptor(BaseInterceptor):
             )
 
             # Link to recent vector query if available
-            session = bus.get_or_create_session()
-            if session.vector_queries:
-                last_query = session.vector_queries[-1]
-                elapsed = time.time() - last_query.timestamp
-                if elapsed < 5.0:
-                    request_event.vector_query_id = last_query.id
+            try:
+                session = bus.get_or_create_session()
+                if session.vector_queries:
+                    last_query = session.vector_queries[-1]
+                    elapsed = time.time() - last_query.timestamp
+                    if elapsed < 5.0:
+                        request_event.vector_query_id = last_query.id
+            except Exception:
+                _logger.debug("VectorLens: failed to link vector query", exc_info=True)
 
-            bus.record_llm_request(request_event)
+            try:
+                bus.record_llm_request(request_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record request", exc_info=True)
 
             # Call original function
             start_time = time.time()
-            try:
-                response = original(self_, **kwargs)
-            except Exception:
-                raise
+            response = original(self_, **kwargs)
 
             # Record response
             latency_ms = (time.time() - start_time) * 1000
@@ -126,7 +138,10 @@ class AnthropicInterceptor(BaseInterceptor):
                 cost_usd=cost_usd,
             )
 
-            bus.record_llm_response(response_event)
+            try:
+                bus.record_llm_response(response_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record response", exc_info=True)
 
             return response
 
@@ -139,7 +154,9 @@ class AnthropicInterceptor(BaseInterceptor):
         async def wrapper(self_: Any, **kwargs: Any) -> Any:
             # Extract request parameters
             model = kwargs.get("model", "")
-            messages = kwargs.get("messages", [])
+            messages = kwargs.get("messages") or []
+            if not isinstance(messages, list):
+                messages = []
             temperature = kwargs.get("temperature", 0.7)
             max_tokens = kwargs.get("max_tokens", 1024)
 
@@ -153,21 +170,24 @@ class AnthropicInterceptor(BaseInterceptor):
             )
 
             # Link to recent vector query if available
-            session = bus.get_or_create_session()
-            if session.vector_queries:
-                last_query = session.vector_queries[-1]
-                elapsed = time.time() - last_query.timestamp
-                if elapsed < 5.0:
-                    request_event.vector_query_id = last_query.id
+            try:
+                session = bus.get_or_create_session()
+                if session.vector_queries:
+                    last_query = session.vector_queries[-1]
+                    elapsed = time.time() - last_query.timestamp
+                    if elapsed < 5.0:
+                        request_event.vector_query_id = last_query.id
+            except Exception:
+                _logger.debug("VectorLens: failed to link vector query", exc_info=True)
 
-            bus.record_llm_request(request_event)
+            try:
+                bus.record_llm_request(request_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record request", exc_info=True)
 
             # Call original function
             start_time = time.time()
-            try:
-                response = await original(self_, **kwargs)
-            except Exception:
-                raise
+            response = await original(self_, **kwargs)
 
             # Record response
             latency_ms = (time.time() - start_time) * 1000
@@ -197,7 +217,10 @@ class AnthropicInterceptor(BaseInterceptor):
                 cost_usd=cost_usd,
             )
 
-            bus.record_llm_response(response_event)
+            try:
+                bus.record_llm_response(response_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record response", exc_info=True)
 
             return response
 

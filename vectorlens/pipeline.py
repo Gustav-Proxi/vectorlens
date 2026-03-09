@@ -2,20 +2,23 @@
 
 Subscribes to llm_response events on the bus and automatically runs
 hallucination detection + chunk attribution, storing results back to the bus.
-Runs in a background thread — no blocking of the main pipeline.
+Uses a bounded ThreadPoolExecutor — prevents thread explosion under load.
 """
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor
 
-from vectorlens.types import AttributionResult, LLMResponseEvent, OutputToken, RetrievedChunk
+from vectorlens.types import AttributionResult, LLMResponseEvent, RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
 _attribution_lock = threading.Lock()
 _installed = False
+
+# Bounded pool: max 3 concurrent attribution jobs (prevents thread exhaustion)
+_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="vectorlens-attr")
 
 
 def setup_auto_attribution() -> None:
@@ -27,17 +30,12 @@ def setup_auto_attribution() -> None:
         from vectorlens.session_bus import bus
         bus.subscribe("llm_response", _on_llm_response)
         _installed = True
-        logger.info("Auto-attribution pipeline active")
+        logger.info("Auto-attribution pipeline active (max_workers=3)")
 
 
 def _on_llm_response(event: LLMResponseEvent) -> None:
-    """Triggered after every LLM response — runs attribution in background thread."""
-    threading.Thread(
-        target=_run_attribution,
-        args=(event,),
-        daemon=True,
-        name="vectorlens-attribution",
-    ).start()
+    """Triggered after every LLM response — submits to bounded pool."""
+    _executor.submit(_run_attribution, event)
 
 
 def _run_attribution(response_event: LLMResponseEvent) -> None:
@@ -50,15 +48,13 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
         if not output_text or not output_text.strip():
             return
 
-        # Find the session and its chunks
         session = bus.get_session(response_event.session_id)
         if not session:
             return
 
-        # Get chunks from the most recent vector query
+        # Get chunks from the vector query linked to this response, else latest
         chunks: list[RetrievedChunk] = []
         if session.vector_queries:
-            # Use the vector query linked to the corresponding LLM request, else latest
             linked_query = None
             for req in session.llm_requests:
                 if req.id == response_event.request_id and req.vector_query_id:
@@ -74,18 +70,15 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
             logger.debug("No chunks available for attribution, skipping")
             return
 
-        # Run hallucination detection (local embeddings, no API calls)
         detector = HallucinationDetector()
         output_tokens = detector.detect(output_text, chunks)
 
-        # Compute overall groundedness
         if output_tokens:
             grounded = sum(1 for t in output_tokens if not t.is_hallucinated)
             overall_groundedness = grounded / len(output_tokens)
         else:
             overall_groundedness = 1.0
 
-        # Find hallucinated spans (token index ranges)
         hallucinated_spans: list[tuple[int, int]] = []
         i = 0
         while i < len(output_tokens):
@@ -97,7 +90,6 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
             else:
                 i += 1
 
-        # Update chunk attribution scores from token-level attributions
         chunk_scores: dict[str, float] = {}
         for token in output_tokens:
             for chunk_id, score in token.chunk_attributions.items():
@@ -106,7 +98,6 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
         for chunk in chunks:
             if chunk.chunk_id in chunk_scores:
                 chunk.attribution_score = chunk_scores[chunk.chunk_id]
-            # Mark chunks that only appear in hallucinated spans
             if overall_groundedness < 0.5 and chunk.attribution_score < 0.1:
                 chunk.caused_hallucination = True
 
@@ -122,12 +113,8 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
 
         bus.record_attribution(result)
         logger.debug(
-            "Attribution complete",
-            extra={
-                "groundedness": f"{overall_groundedness:.2f}",
-                "hallucinated_spans": len(hallucinated_spans),
-                "chunks": len(chunks),
-            },
+            f"Attribution complete: groundedness={overall_groundedness:.2f} "
+            f"spans={len(hallucinated_spans)} chunks={len(chunks)}"
         )
 
     except Exception as e:

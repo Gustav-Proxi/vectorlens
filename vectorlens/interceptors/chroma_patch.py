@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import functools
+import logging
+import threading
 from typing import Any, Callable
 
 from vectorlens.interceptors.base import BaseInterceptor
 from vectorlens.session_bus import bus
 from vectorlens.types import RetrievedChunk, VectorQueryEvent
+
+_logger = logging.getLogger(__name__)
 
 
 class ChromaInterceptor(BaseInterceptor):
@@ -15,39 +19,42 @@ class ChromaInterceptor(BaseInterceptor):
 
     def __init__(self) -> None:
         self._installed = False
+        self._install_lock = threading.Lock()
         self._original_query: Callable | None = None
 
     def install(self) -> None:
         """Install ChromaDB patches."""
-        if self._installed:
-            return
+        with self._install_lock:
+            if self._installed:
+                return
 
-        try:
-            import chromadb
-            from chromadb.api.models.Collection import Collection
-        except ImportError:
-            return
+            try:
+                import chromadb
+                from chromadb.api.models.Collection import Collection
+            except ImportError:
+                return
 
-        # Patch the query method
-        self._original_query = Collection.query
-        Collection.query = self._wrap_query(self._original_query)
+            # Patch the query method
+            self._original_query = Collection.query
+            Collection.query = self._wrap_query(self._original_query)
 
-        self._installed = True
+            self._installed = True
 
     def uninstall(self) -> None:
         """Restore original ChromaDB functions."""
-        if not self._installed:
-            return
+        with self._install_lock:
+            if not self._installed:
+                return
 
-        try:
-            from chromadb.api.models.Collection import Collection
-        except ImportError:
-            return
+            try:
+                from chromadb.api.models.Collection import Collection
+            except ImportError:
+                return
 
-        if self._original_query:
-            Collection.query = self._original_query
+            if self._original_query:
+                Collection.query = self._original_query
 
-        self._installed = False
+            self._installed = False
 
     def is_installed(self) -> bool:
         """Return True if interceptor is installed."""
@@ -92,9 +99,9 @@ class ChromaInterceptor(BaseInterceptor):
 
                 for i, chunk_id in enumerate(ids):
                     text = documents[i] if i < len(documents) else ""
-                    # For cosine distance, convert to similarity: 1 - distance
+                    # For cosine distance, convert to similarity: 1 - distance, clamped to [0, 1]
                     distance = distances[i] if i < len(distances) else 0.0
-                    score = 1.0 - distance if distance <= 1.0 else distance
+                    score = max(0.0, min(1.0, 1.0 - distance))
                     metadata = metadatas[i] if i < len(metadatas) else {}
 
                     chunks.append(
@@ -115,7 +122,10 @@ class ChromaInterceptor(BaseInterceptor):
                 results=chunks,
             )
 
-            bus.record_vector_query(event)
+            try:
+                bus.record_vector_query(event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record vector query", exc_info=True)
 
             return result
 

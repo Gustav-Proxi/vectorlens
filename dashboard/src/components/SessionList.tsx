@@ -112,7 +112,7 @@ export const SessionList: React.FC<SessionListProps> = ({
                   <div className="flex items-start gap-2 mb-1">
                     <span className="inline-block w-2 h-2 bg-[#5ce05c] rounded-full mt-1 flex-shrink-0"></span>
                     <div className="truncate text-xs font-mono text-[#e8e8e8] flex-1">
-                      {session.id.substring(0, 8)}...
+                      {(session.id ?? '').substring(0, 8)}...
                     </div>
                   </div>
                   <div className="text-xs text-[#8a8a8a] mb-2 pl-4">

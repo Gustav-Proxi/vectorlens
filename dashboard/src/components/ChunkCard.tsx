@@ -15,10 +15,16 @@ function getAttributionColor(score: number, causedHallucination: boolean): strin
   return '#555555';
 }
 
+const safeFixed = (n: number | undefined | null, digits: number): string => {
+  if (n == null || !isFinite(n)) return 'N/A';
+  return n.toFixed(digits);
+};
+
 export const ChunkCard: React.FC<ChunkCardProps> = ({ chunk, isHighlighted, rank, onHover }) => {
   const [expanded, setExpanded] = useState(false);
-  const pct = Math.round(chunk.attribution_score * 100);
-  const barColor = getAttributionColor(chunk.attribution_score, chunk.caused_hallucination);
+  const attrScore = isFinite(chunk.attribution_score ?? 0) ? (chunk.attribution_score ?? 0) : 0;
+  const pct = Math.round(attrScore * 100);
+  const barColor = getAttributionColor(attrScore, chunk.caused_hallucination);
   const docTitle = (chunk.metadata?.document_title as string) ?? '';
   const chunkType = (chunk.metadata?.chunk_type as string) ?? '';
   const sectionPath = (chunk.metadata?.section_path as string) ?? '';
@@ -61,7 +67,7 @@ export const ChunkCard: React.FC<ChunkCardProps> = ({ chunk, isHighlighted, rank
               </span>
             )}
             <span className="px-1.5 py-0.5 bg-[#0f0f0f] text-[#6a6a6a] text-xs rounded font-mono">
-              sim {chunk.score.toFixed(3)}
+              sim {safeFixed(chunk.score, 3)}
             </span>
             {docTitle && (
               <span className="text-[#6a6a6a] text-xs truncate max-w-48" title={docTitle}>
@@ -101,9 +107,9 @@ export const ChunkCard: React.FC<ChunkCardProps> = ({ chunk, isHighlighted, rank
             </div>
             <div className="grid grid-cols-2 gap-2">
               <ScoreRow label="Attribution" value={`${pct}%`} color={barColor} />
-              <ScoreRow label="Similarity" value={chunk.score.toFixed(4)} />
-              {vectorScore != null && <ScoreRow label="Vector score" value={vectorScore.toFixed(4)} />}
-              {keywordScore != null && <ScoreRow label="Keyword score" value={keywordScore.toFixed(4)} />}
+              <ScoreRow label="Similarity" value={safeFixed(chunk.score, 4)} />
+              {vectorScore != null && <ScoreRow label="Vector score" value={safeFixed(vectorScore, 4)} />}
+              {keywordScore != null && <ScoreRow label="Keyword score" value={safeFixed(keywordScore, 4)} />}
             </div>
           </div>
 

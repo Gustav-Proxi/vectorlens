@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import functools
+import logging
+import threading
 from typing import Any, Callable
 
 from vectorlens.interceptors.base import BaseInterceptor
 from vectorlens.session_bus import bus
 from vectorlens.types import RetrievedChunk, VectorQueryEvent
+
+_logger = logging.getLogger(__name__)
 
 
 class FAISSInterceptor(BaseInterceptor):
@@ -15,38 +19,41 @@ class FAISSInterceptor(BaseInterceptor):
 
     def __init__(self) -> None:
         self._installed = False
+        self._install_lock = threading.Lock()
         self._original_search: Callable | None = None
 
     def install(self) -> None:
         """Install FAISS patches."""
-        if self._installed:
-            return
+        with self._install_lock:
+            if self._installed:
+                return
 
-        try:
-            import faiss
-        except ImportError:
-            return
+            try:
+                import faiss
+            except ImportError:
+                return
 
-        # Patch the Index.search method
-        self._original_search = faiss.Index.search
-        faiss.Index.search = self._wrap_search(self._original_search)
+            # Patch the Index.search method
+            self._original_search = faiss.Index.search
+            faiss.Index.search = self._wrap_search(self._original_search)
 
-        self._installed = True
+            self._installed = True
 
     def uninstall(self) -> None:
         """Restore original FAISS functions."""
-        if not self._installed:
-            return
+        with self._install_lock:
+            if not self._installed:
+                return
 
-        try:
-            import faiss
-        except ImportError:
-            return
+            try:
+                import faiss
+            except ImportError:
+                return
 
-        if self._original_search:
-            faiss.Index.search = self._original_search
+            if self._original_search:
+                faiss.Index.search = self._original_search
 
-        self._installed = False
+            self._installed = False
 
     def is_installed(self) -> bool:
         """Return True if interceptor is installed."""
@@ -100,8 +107,8 @@ class FAISSInterceptor(BaseInterceptor):
                     if idx == -1:
                         continue
 
-                    # Convert distance to similarity score: 1/(1+distance)
-                    score = 1.0 / (1.0 + float(dist))
+                    # Convert distance to similarity score: 1/(1+distance), clamped to [0, 1]
+                    score = max(0.0, min(1.0, float(1.0 / (1.0 + abs(dist)))))
 
                     chunks.append(
                         RetrievedChunk(
@@ -124,7 +131,10 @@ class FAISSInterceptor(BaseInterceptor):
                 results=chunks,
             )
 
-            bus.record_vector_query(event)
+            try:
+                bus.record_vector_query(event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record vector query", exc_info=True)
 
             return distances, indices
 

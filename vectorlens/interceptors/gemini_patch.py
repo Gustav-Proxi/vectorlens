@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
+import threading
 import time
 from typing import Any, Callable
 
@@ -16,12 +18,15 @@ from vectorlens.interceptors.base import BaseInterceptor
 from vectorlens.session_bus import bus
 from vectorlens.types import LLMRequestEvent, LLMResponseEvent
 
+_logger = logging.getLogger(__name__)
+
 
 class GeminiInterceptor(BaseInterceptor):
     """Patches Google Gemini APIs to record LLM requests and responses."""
 
     def __init__(self) -> None:
         self._installed = False
+        self._install_lock = threading.Lock()
         self._original_generate_content_legacy: Callable | None = None
         self._original_generate_content_async_legacy: Callable | None = None
         self._original_generate_content_new: Callable | None = None
@@ -29,35 +34,37 @@ class GeminiInterceptor(BaseInterceptor):
 
     def install(self) -> None:
         """Install Gemini patches for both SDK versions."""
-        if self._installed:
-            return
+        with self._install_lock:
+            if self._installed:
+                return
 
-        # Try legacy SDK first (google-generativeai)
-        self._install_legacy_sdk()
+            # Try legacy SDK first (google-generativeai)
+            self._install_legacy_sdk()
 
-        # Try new SDK (google-genai)
-        self._install_new_sdk()
+            # Try new SDK (google-genai)
+            self._install_new_sdk()
 
-        if (
-            self._original_generate_content_legacy
-            or self._original_generate_content_async_legacy
-            or self._original_generate_content_new
-            or self._original_generate_content_async_new
-        ):
-            self._installed = True
+            if (
+                self._original_generate_content_legacy
+                or self._original_generate_content_async_legacy
+                or self._original_generate_content_new
+                or self._original_generate_content_async_new
+            ):
+                self._installed = True
 
     def uninstall(self) -> None:
         """Restore original Gemini functions."""
-        if not self._installed:
-            return
+        with self._install_lock:
+            if not self._installed:
+                return
 
-        # Restore legacy SDK
-        self._uninstall_legacy_sdk()
+            # Restore legacy SDK
+            self._uninstall_legacy_sdk()
 
-        # Restore new SDK
-        self._uninstall_new_sdk()
+            # Restore new SDK
+            self._uninstall_new_sdk()
 
-        self._installed = False
+            self._installed = False
 
     def is_installed(self) -> bool:
         """Return True if interceptor is installed."""
@@ -160,21 +167,24 @@ class GeminiInterceptor(BaseInterceptor):
             )
 
             # Link to recent vector query if available
-            session = bus.get_or_create_session()
-            if session.vector_queries:
-                last_query = session.vector_queries[-1]
-                elapsed = time.time() - last_query.timestamp
-                if elapsed < 5.0:
-                    request_event.vector_query_id = last_query.id
+            try:
+                session = bus.get_or_create_session()
+                if session.vector_queries:
+                    last_query = session.vector_queries[-1]
+                    elapsed = time.time() - last_query.timestamp
+                    if elapsed < 5.0:
+                        request_event.vector_query_id = last_query.id
+            except Exception:
+                _logger.debug("VectorLens: failed to link vector query", exc_info=True)
 
-            bus.record_llm_request(request_event)
+            try:
+                bus.record_llm_request(request_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record request", exc_info=True)
 
             # Call original function
             start_time = time.time()
-            try:
-                response = original(self_, *args, **kwargs)
-            except Exception:
-                raise
+            response = original(self_, *args, **kwargs)
 
             # Record response
             latency_ms = (time.time() - start_time) * 1000
@@ -213,7 +223,10 @@ class GeminiInterceptor(BaseInterceptor):
                 cost_usd=cost_usd,
             )
 
-            bus.record_llm_response(response_event)
+            try:
+                bus.record_llm_response(response_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record response", exc_info=True)
 
             return response
 
@@ -244,21 +257,24 @@ class GeminiInterceptor(BaseInterceptor):
             )
 
             # Link to recent vector query if available
-            session = bus.get_or_create_session()
-            if session.vector_queries:
-                last_query = session.vector_queries[-1]
-                elapsed = time.time() - last_query.timestamp
-                if elapsed < 5.0:
-                    request_event.vector_query_id = last_query.id
+            try:
+                session = bus.get_or_create_session()
+                if session.vector_queries:
+                    last_query = session.vector_queries[-1]
+                    elapsed = time.time() - last_query.timestamp
+                    if elapsed < 5.0:
+                        request_event.vector_query_id = last_query.id
+            except Exception:
+                _logger.debug("VectorLens: failed to link vector query", exc_info=True)
 
-            bus.record_llm_request(request_event)
+            try:
+                bus.record_llm_request(request_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record request", exc_info=True)
 
             # Call original function
             start_time = time.time()
-            try:
-                response = await original(self_, *args, **kwargs)
-            except Exception:
-                raise
+            response = await original(self_, *args, **kwargs)
 
             # Record response
             latency_ms = (time.time() - start_time) * 1000
@@ -297,7 +313,10 @@ class GeminiInterceptor(BaseInterceptor):
                 cost_usd=cost_usd,
             )
 
-            bus.record_llm_response(response_event)
+            try:
+                bus.record_llm_response(response_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record response", exc_info=True)
 
             return response
 
@@ -328,21 +347,24 @@ class GeminiInterceptor(BaseInterceptor):
             )
 
             # Link to recent vector query if available
-            session = bus.get_or_create_session()
-            if session.vector_queries:
-                last_query = session.vector_queries[-1]
-                elapsed = time.time() - last_query.timestamp
-                if elapsed < 5.0:
-                    request_event.vector_query_id = last_query.id
+            try:
+                session = bus.get_or_create_session()
+                if session.vector_queries:
+                    last_query = session.vector_queries[-1]
+                    elapsed = time.time() - last_query.timestamp
+                    if elapsed < 5.0:
+                        request_event.vector_query_id = last_query.id
+            except Exception:
+                _logger.debug("VectorLens: failed to link vector query", exc_info=True)
 
-            bus.record_llm_request(request_event)
+            try:
+                bus.record_llm_request(request_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record request", exc_info=True)
 
             # Call original function
             start_time = time.time()
-            try:
-                response = original(self_, *args, **kwargs)
-            except Exception:
-                raise
+            response = original(self_, *args, **kwargs)
 
             # Record response
             latency_ms = (time.time() - start_time) * 1000
@@ -381,7 +403,10 @@ class GeminiInterceptor(BaseInterceptor):
                 cost_usd=cost_usd,
             )
 
-            bus.record_llm_response(response_event)
+            try:
+                bus.record_llm_response(response_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record response", exc_info=True)
 
             return response
 
@@ -412,21 +437,24 @@ class GeminiInterceptor(BaseInterceptor):
             )
 
             # Link to recent vector query if available
-            session = bus.get_or_create_session()
-            if session.vector_queries:
-                last_query = session.vector_queries[-1]
-                elapsed = time.time() - last_query.timestamp
-                if elapsed < 5.0:
-                    request_event.vector_query_id = last_query.id
+            try:
+                session = bus.get_or_create_session()
+                if session.vector_queries:
+                    last_query = session.vector_queries[-1]
+                    elapsed = time.time() - last_query.timestamp
+                    if elapsed < 5.0:
+                        request_event.vector_query_id = last_query.id
+            except Exception:
+                _logger.debug("VectorLens: failed to link vector query", exc_info=True)
 
-            bus.record_llm_request(request_event)
+            try:
+                bus.record_llm_request(request_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record request", exc_info=True)
 
             # Call original function
             start_time = time.time()
-            try:
-                response = await original(self_, *args, **kwargs)
-            except Exception:
-                raise
+            response = await original(self_, *args, **kwargs)
 
             # Record response
             latency_ms = (time.time() - start_time) * 1000
@@ -465,7 +493,10 @@ class GeminiInterceptor(BaseInterceptor):
                 cost_usd=cost_usd,
             )
 
-            bus.record_llm_response(response_event)
+            try:
+                bus.record_llm_response(response_event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record response", exc_info=True)
 
             return response
 

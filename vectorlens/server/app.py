@@ -8,15 +8,31 @@ from typing import Any
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from vectorlens.session_bus import bus
 from vectorlens.server.api import router as api_router
 
 logger = logging.getLogger(__name__)
+
+# Max request body size: 1MB — prevents memory exhaustion via large POST bodies
+MAX_REQUEST_BODY = 1 * 1024 * 1024
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests with bodies larger than MAX_REQUEST_BODY."""
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BODY:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": "Request body too large"},
+            )
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -37,13 +53,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware — allow all origins for local dev
+app.add_middleware(RequestSizeLimitMiddleware)
+
+# CORS middleware — localhost only (prevents cross-origin data exfiltration)
+# "*" with allow_credentials=True would let any webpage steal session data
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://127.0.0.1:7756",
+        "http://localhost:7756",
+        "http://127.0.0.1:5173",  # Vite dev server
+        "http://localhost:5173",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
 )
 
 # WebSocket state

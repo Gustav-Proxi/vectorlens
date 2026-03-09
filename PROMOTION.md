@@ -351,21 +351,54 @@ Place these at the top of README.md, right after the title and 1-line descriptio
 
 ---
 
-## Summary
+## 9. Advanced Growth Hacks & Community Building
 
-**Launch cadence**:
-- Day 1: GitHub + PyPI
-- Day 2: Hacker News (watch for 8 hrs, respond to comments)
-- Day 3: r/MachineLearning
-- Day 4: r/LocalLLaMA + GitHub issues
-- Day 5: Twitter thread
-- Week 2: Responsiveness > everything else. Fix bugs same-day, respond to issues within 4 hrs
-- Week 3+: Content (blog post, demo video), user wins, partnerships
+To get from 500 stars to 5,000 stars, standard posting isn't enough. You need compounding distribution channels.
 
-**Key differentiators**:
+### A. The "Honey-pot" OSS Demo Repos
+Developers search GitHub for examples, not just tools. 
+- Build a tiny repo called `fastapi-rag-hallucination-demo` or `langchain-broken-rag-fixed`.
+- Inside, create a naturally flawed RAG pipeline that hallucinates.
+- Use VectorLens to "catch" and fix the hallucination.
+- **Why?** People searching for "FastAPI RAG example" will find your demo, run it, see the beautiful VectorLens dashboard, and instantly adopt the core tool.
+
+### B. Product Hunt Launch (Week 3)
+Product Hunt drives immense traffic but requires preparation.
+- **Timing:** Launch on a Tuesday or Wednesday at 12:01 AM PST.
+- **Collateral needed:** A punchy tagline ("The x-ray for LLM hallucinations"), a 60-second Loom video demonstrating the dashboard, and an engaging "Maker Comment" explaining *why* you built it (the pain of log archaeology).
+- **Hunter:** Try to get hunted by someone with a large following in the dev-tools space, though self-hunting works just fine if your network is engaged.
+
+### C. Newsletter & Influencer Outreach
+Don't wait for them to find you. Pitch them a ready-made story.
+- **Target Newsletters:** TLDR AI, The Rundown AI, Ben's Bites, Python Weekly, AI Breakfast.
+- **The Pitch:** "Hey [Name], I built an open-source tool that solves the biggest blindspot in RAG: token-level hallucination attribution running entirely locally. Thought your dev-heavy audience might find it useful. [Link] [1-sentence architecture summary]."
+- **Micro-Influencers:** Search Twitter/X for "struggling with RAG" or "hallucination debugging". DM them: "Hey, saw you were fighting with RAG traces. I built a local OSS tool that might auto-detect the exact bad chunk for you. Would love your feedback if you're open to trying it."
+
+### D. Content Marketing & "Engineering as Marketing"
+- **The "State of RAG" Benchmark:** Run VectorLens against 5 popular open-source RAG tutorials. Publish an article: "We ran 5 popular RAG tutorials through VectorLens. 4 of them hallucinated silently." This is extremely clickable content that naturally showcases the tool's value.
+- **Provide "Benchmarks as a Service":** Offer to run VectorLens on other open-source projects' example pipelines and submit PRs to fix their context windows. You become the hero, and they learn about your tool.
+
+---
+
+## 10. Summary & Metrics
+
+**Launch Cadence**:
+- **Day 1**: GitHub + PyPI
+- **Day 2**: Hacker News (Show HN)
+- **Day 3**: r/MachineLearning & r/Python
+- **Day 4**: r/LocalLLaMA + GitHub issues
+- **Day 5**: Twitter thread
+- **Week 2**: Responsiveness > everything else. Fix bugs same-day, respond within 4 hrs.
+- **Week 3**: Product Hunt Launch + Newsletter Pitches.
+- **Month 2+**: Content marketing (Benchmarks, Honey-pot repos).
+
+**Key Differentiators to Hammer Home**:
 - Zero config (literally 2 lines)
-- Fully local (no cloud, no signup)
-- Token-level attribution (what others don't do)
-- Works with existing code (no refactoring)
+- Fully local (no cloud, no signup, no data leakage)
+- Token/Sentence-level attribution (what competitors don't do)
+- Works with existing code natively
 
-**Success metric**: 500 stars in 2 weeks, 100 PyPI installs/week by week 3, meaningful community PRs by month 2.
+**Success Metrics**: 
+- **Week 2:** 500 stars, 100 PyPI installs.
+- **Month 1:** Organic mentions on Twitter/Reddit by users you don't know, 3+ external PRs.
+- **Year 1:** Default inclusion in "Modern Stack" AI lists.

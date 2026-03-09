@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import functools
+import logging
+import threading
 from typing import Any, Callable
 
 from vectorlens.interceptors.base import BaseInterceptor
 from vectorlens.session_bus import bus
 from vectorlens.types import RetrievedChunk, VectorQueryEvent
+
+_logger = logging.getLogger(__name__)
 
 
 class WeaviateInterceptor(BaseInterceptor):
@@ -15,48 +19,51 @@ class WeaviateInterceptor(BaseInterceptor):
 
     def __init__(self) -> None:
         self._installed = False
+        self._install_lock = threading.Lock()
         self._original_near_text: Callable | None = None
         self._original_near_vector: Callable | None = None
 
     def install(self) -> None:
         """Install Weaviate patches."""
-        if self._installed:
-            return
+        with self._install_lock:
+            if self._installed:
+                return
 
-        try:
-            from weaviate.collections.queries.near_text import NearTextQuery
-            from weaviate.collections.queries.near_vector import NearVectorQuery
-        except ImportError:
-            return
+            try:
+                from weaviate.collections.queries.near_text import NearTextQuery
+                from weaviate.collections.queries.near_vector import NearVectorQuery
+            except ImportError:
+                return
 
-        # Patch NearTextQuery.near_text
-        self._original_near_text = NearTextQuery.near_text
-        NearTextQuery.near_text = self._wrap_near_text(self._original_near_text)
+            # Patch NearTextQuery.near_text
+            self._original_near_text = NearTextQuery.near_text
+            NearTextQuery.near_text = self._wrap_near_text(self._original_near_text)
 
-        # Patch NearVectorQuery.near_vector
-        self._original_near_vector = NearVectorQuery.near_vector
-        NearVectorQuery.near_vector = self._wrap_near_vector(self._original_near_vector)
+            # Patch NearVectorQuery.near_vector
+            self._original_near_vector = NearVectorQuery.near_vector
+            NearVectorQuery.near_vector = self._wrap_near_vector(self._original_near_vector)
 
-        self._installed = True
+            self._installed = True
 
     def uninstall(self) -> None:
         """Restore original Weaviate functions."""
-        if not self._installed:
-            return
+        with self._install_lock:
+            if not self._installed:
+                return
 
-        try:
-            from weaviate.collections.queries.near_text import NearTextQuery
-            from weaviate.collections.queries.near_vector import NearVectorQuery
-        except ImportError:
-            return
+            try:
+                from weaviate.collections.queries.near_text import NearTextQuery
+                from weaviate.collections.queries.near_vector import NearVectorQuery
+            except ImportError:
+                return
 
-        if self._original_near_text:
-            NearTextQuery.near_text = self._original_near_text
+            if self._original_near_text:
+                NearTextQuery.near_text = self._original_near_text
 
-        if self._original_near_vector:
-            NearVectorQuery.near_vector = self._original_near_vector
+            if self._original_near_vector:
+                NearVectorQuery.near_vector = self._original_near_vector
 
-        self._installed = False
+            self._installed = False
 
     def is_installed(self) -> bool:
         """Return True if interceptor is installed."""
@@ -105,9 +112,9 @@ class WeaviateInterceptor(BaseInterceptor):
                         score = 0.0
                         try:
                             if hasattr(obj, "metadata") and hasattr(obj.metadata, "distance"):
-                                # Weaviate distance -> similarity: 1 - distance
+                                # Weaviate distance -> similarity: 1 - distance, clamped to [0, 1]
                                 distance = obj.metadata.distance
-                                score = 1.0 - float(distance) if distance is not None else 0.0
+                                score = max(0.0, min(1.0, 1.0 - float(distance))) if distance is not None else 0.0
                         except (AttributeError, TypeError, ValueError):
                             pass
 
@@ -132,7 +139,10 @@ class WeaviateInterceptor(BaseInterceptor):
                 results=chunks,
             )
 
-            bus.record_vector_query(event)
+            try:
+                bus.record_vector_query(event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record vector query", exc_info=True)
 
             return result
 
@@ -192,9 +202,9 @@ class WeaviateInterceptor(BaseInterceptor):
                         score = 0.0
                         try:
                             if hasattr(obj, "metadata") and hasattr(obj.metadata, "distance"):
-                                # Weaviate distance -> similarity: 1 - distance
+                                # Weaviate distance -> similarity: 1 - distance, clamped to [0, 1]
                                 distance = obj.metadata.distance
-                                score = 1.0 - float(distance) if distance is not None else 0.0
+                                score = max(0.0, min(1.0, 1.0 - float(distance))) if distance is not None else 0.0
                         except (AttributeError, TypeError, ValueError):
                             pass
 
@@ -219,7 +229,10 @@ class WeaviateInterceptor(BaseInterceptor):
                 results=chunks,
             )
 
-            bus.record_vector_query(event)
+            try:
+                bus.record_vector_query(event)
+            except Exception:
+                _logger.debug("VectorLens: failed to record vector query", exc_info=True)
 
             return result
 
