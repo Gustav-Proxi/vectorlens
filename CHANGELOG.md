@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-03-09
+
+### Added
+- **Streaming capture** (`interceptors/httpx_transport.py::_StreamingResponseWrapper`) — SSE chunks intercepted, full text reconstructed after stream ends. `stream=True` now captured for OpenAI, Anthropic, Gemini, Mistral. Fixes production RAG UI blindness.
+- **LangChain interceptor** (`interceptors/langchain_patch.py`) — patches `BaseChatModel._generate/_agenerate` + `BaseRetriever.invoke/ainvoke`. Converts `BaseMessage` to dict, captures retriever results as `VectorQueryEvent` with `db_type="langchain-retriever"`. Zero-config integration for LCEL pipelines.
+- **Conversation DAG** (`LLMRequestEvent.parent_request_id`, `Session.conversation_id`, `bus.start_conversation()`) — links child LLM calls to parent requests. Multi-turn agents now show as connected call tree instead of isolated calls. `chain_step` field labels role (e.g., "agent", "tool_use").
+- **Robust chunk removal** (`attribution/perturbation.py::_remove_chunk_from_messages()`) — 3-tier fallback: exact match → 120-char prefix match → first-sentence match. Replaces naive substring. Handles truncated/reformatted chunks.
+- **Model download progress** (`detection/hallucination.py`, `attribution/perturbation.py`) — yellow warning + green confirmation printed on first-time ~100MB model download. Silent on cache hit.
+- **pgvector native** (`interceptors/pgvector_patch.py`) — patches `SQLAlchemy AsyncSession.execute` + `Session.execute`. Detects `<=>`, `<->`, `<#>` operators. Extracts rows into `VectorQueryEvent`. Returns `_BufferedResult` so caller can still iterate. Registered as `"pgvector"` interceptor.
+
+### Note
+All major RAG frameworks and vector DBs now covered zero-config: OpenAI, Anthropic, Gemini, Mistral (httpx), ChromaDB, Pinecone, FAISS, Weaviate (SDK patches), LangChain (framework patch), pgvector (SQL interceptor).
+
 ## [0.1.2] — 2026-03-09
 
 ### Added

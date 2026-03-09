@@ -12,6 +12,7 @@ from vectorlens.interceptors import get_installed, install_all, uninstall_all
 from vectorlens.interceptors.openai_patch import OpenAIInterceptor
 from vectorlens.interceptors.anthropic_patch import AnthropicInterceptor
 from vectorlens.interceptors.chroma_patch import ChromaInterceptor
+from vectorlens.interceptors.pgvector_patch import PGVectorInterceptor
 from vectorlens.session_bus import SessionBus
 from vectorlens.types import RetrievedChunk, VectorQueryEvent
 
@@ -513,3 +514,164 @@ def test_interceptor_thread_safety():
     errors = [r for r in results if "error" in r[0]]
     # Thread safety ensures no exceptions are raised
     assert len(errors) == 0
+
+
+# ============================================================================
+# pgvector Interceptor Tests
+# ============================================================================
+
+
+class TestPGVectorInterceptor:
+    """Tests for pgvector vector query interceptor."""
+
+    def setup_method(self):
+        """Fresh session bus and interceptor for each test."""
+        self.bus = SessionBus()
+        self.interceptor = PGVectorInterceptor()
+
+    def teardown_method(self):
+        """Clean up interceptor state."""
+        if self.interceptor._installed:
+            self.interceptor.uninstall()
+
+    def test_detects_vector_query_with_cosine_operator(self):
+        """Test detection of pgvector cosine distance operator (<=>)."""
+        from vectorlens.interceptors.pgvector_patch import _is_vector_query
+
+        sql = "SELECT id, text, 1 - (embedding <=> :vec) AS score FROM chunks LIMIT 10"
+        assert _is_vector_query(sql) is True
+
+    def test_detects_vector_query_with_l2_operator(self):
+        """Test detection of pgvector L2 distance operator (<->)."""
+        from vectorlens.interceptors.pgvector_patch import _is_vector_query
+
+        sql = "SELECT id, (embedding <-> :vec) AS distance FROM chunks LIMIT 5"
+        assert _is_vector_query(sql) is True
+
+    def test_detects_vector_query_with_inner_product_operator(self):
+        """Test detection of pgvector inner product operator (<#>)."""
+        from vectorlens.interceptors.pgvector_patch import _is_vector_query
+
+        sql = "SELECT id, (embedding <#> :vec) FROM chunks"
+        assert _is_vector_query(sql) is True
+
+    def test_ignores_non_vector_query(self):
+        """Test that non-pgvector queries are ignored."""
+        from vectorlens.interceptors.pgvector_patch import _is_vector_query
+
+        sql = "SELECT id, text FROM chunks WHERE id = :id"
+        assert _is_vector_query(sql) is False
+
+    def test_extracts_sql_from_text_statement(self):
+        """Test extraction of SQL from sqlalchemy text() clause."""
+        from vectorlens.interceptors.pgvector_patch import _get_sql_string
+
+        # Test with string
+        sql_str = _get_sql_string("SELECT * FROM table")
+        assert sql_str == "SELECT * FROM table"
+
+    def test_builds_event_from_rows_with_common_columns(self):
+        """Test building VectorQueryEvent from rows with standard column names."""
+        from vectorlens.interceptors.pgvector_patch import _build_event_from_rows
+
+        # Create mock rows as namedtuples
+        from collections import namedtuple
+
+        Row = namedtuple("Row", ["id", "text", "score"])
+        rows = [
+            Row(id="chunk1", text="Document 1", score=0.95),
+            Row(id="chunk2", text="Document 2", score=0.75),
+        ]
+
+        event = _build_event_from_rows(rows, "SELECT ...", 10.0)
+        assert event is not None
+        assert event.db_type == "pgvector"
+        assert event.top_k == 2
+        assert len(event.results) == 2
+        assert event.results[0].chunk_id == "chunk1"
+        assert event.results[0].text == "Document 1"
+        assert event.results[0].score == 0.95
+        assert event.results[1].chunk_id == "chunk2"
+
+    def test_builds_event_with_alternative_column_names(self):
+        """Test column name flexibility (chunk_id, content, similarity, etc.)."""
+        from vectorlens.interceptors.pgvector_patch import _build_event_from_rows
+        from collections import namedtuple
+
+        Row = namedtuple("Row", ["chunk_id", "content", "similarity"])
+        rows = [Row(chunk_id="id1", content="Text 1", similarity=0.85)]
+
+        event = _build_event_from_rows(rows, "SELECT ...", 5.0)
+        assert event is not None
+        assert event.results[0].chunk_id == "id1"
+        assert event.results[0].text == "Text 1"
+        assert event.results[0].score == 0.85
+
+    def test_clamps_score_to_range(self):
+        """Test that scores outside [0,1] are clamped."""
+        from vectorlens.interceptors.pgvector_patch import _build_event_from_rows
+        from collections import namedtuple
+
+        Row = namedtuple("Row", ["id", "text", "score"])
+        rows = [
+            Row(id="id1", text="Text", score=-0.5),  # Below 0
+            Row(id="id2", text="Text", score=1.5),   # Above 1
+        ]
+
+        event = _build_event_from_rows(rows, "SELECT ...", 5.0)
+        assert event.results[0].score == 0.0
+        assert event.results[1].score == 1.0
+
+    def test_buffers_result_rows(self):
+        """Test that _BufferedResult correctly buffers and provides access to rows."""
+        from vectorlens.interceptors.pgvector_patch import _BufferedResult
+        from collections import namedtuple
+
+        Row = namedtuple("Row", ["id", "text"])
+        rows = [Row(id="1", text="a"), Row(id="2", text="b")]
+
+        mock_original = MagicMock()
+        buffered = _BufferedResult(rows, mock_original)
+
+        # fetchall should return all rows
+        all_rows = buffered.fetchall()
+        assert len(all_rows) == 2
+        assert all_rows[0].id == "1"
+
+        # iteration should work
+        ids = [row.id for row in buffered]
+        assert ids == ["1", "2"]
+
+        # rowcount should be accurate
+        assert buffered.rowcount == 2
+
+    def test_buffered_result_fetchone(self):
+        """Test fetchone() on _BufferedResult."""
+        from vectorlens.interceptors.pgvector_patch import _BufferedResult
+        from collections import namedtuple
+
+        Row = namedtuple("Row", ["id"])
+        rows = [Row(id="1"), Row(id="2")]
+
+        buffered = _BufferedResult(rows, MagicMock())
+        assert buffered.fetchone().id == "1"
+        assert buffered.fetchone().id == "2"
+        assert buffered.fetchone() is None
+
+    def test_install_and_uninstall(self):
+        """Test install/uninstall lifecycle."""
+        assert not self.interceptor.is_installed()
+        self.interceptor.install()
+        # install() succeeds even if sqlalchemy is not available
+        # (it catches ImportError silently)
+        self.interceptor.uninstall()
+        assert not self.interceptor.is_installed()
+
+    def test_handles_missing_sqlalchemy(self):
+        """Test graceful handling when sqlalchemy is not installed."""
+        # Simulate missing sqlalchemy by patching import
+        with patch("builtins.__import__", side_effect=ImportError("sqlalchemy not found")):
+            # install() should not raise
+            self.interceptor.install()
+            # And should not be installed (since sqlalchemy unavailable)
+            assert not self.interceptor.is_installed()

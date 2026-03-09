@@ -220,12 +220,14 @@ result = asyncio.run(rag_query("What is quantum computing?"))
 | **OpenAI** | model, tokens, cost, latency | ✓ Native |
 | **Anthropic** | model, tokens, cost, latency | ✓ Native |
 | **Google Gemini** | model (SDK v1 & v2), tokens, latency | ✓ Native |
+| **LangChain** | LLM calls, retrievers, chain steps | ✓ Native |
 | **ChromaDB** | similarity scores, metadata, collection | ✓ Native |
 | **Pinecone** | similarity scores, namespace, metadata | ✓ Native |
 | **FAISS** | L2/dot-product distances, metadata | ✓ Native |
 | **Weaviate** | similarity scores, metadata, class | ✓ Native |
+| **pgvector** | SQL similarity operators, metadata | ✓ Native |
 | **HuggingFace Transformers** | model, tokens, latency | ✓ Native |
-| **Custom DB (pgvector, Elasticsearch, etc.)** | via manual event API | ✓ See Example 2 |
+| **Custom DB (Elasticsearch, Milvus, etc.)** | via manual event API | ✓ See Example 2 |
 
 **Cost Calculation** (as of Feb 2025):
 - GPT-4o: $5/1M input tokens + $15/1M output tokens
@@ -262,6 +264,40 @@ result = asyncio.run(rag_query("What is quantum computing?"))
   - **Metadata**: Custom fields from vector DB (source, page number, etc.)
   - **⚠️ Badge**: If chunk contributed to hallucination
 - Click to highlight related sentences in output
+
+## Streaming Support
+
+VectorLens now captures streaming responses (`stream=True`). SSE chunks are intercepted at the httpx transport layer, and the full text is reconstructed after the stream completes. Works with:
+- OpenAI (streaming)
+- Anthropic (streaming)
+- Google Gemini (streaming)
+- Mistral (streaming)
+
+Note: Streaming responses don't include exact token counts in SSE chunks; VectorLens estimates completion tokens from word count.
+
+## Multi-turn Agents
+
+VectorLens tracks multi-turn conversation DAGs via `parent_request_id` linking. For multi-turn agents:
+- Call `bus.start_conversation()` to get a `conversation_id` (groups related sessions)
+- Each `LLMRequestEvent` includes `parent_request_id` linking child calls to parent
+- The `chain_step` field labels the role (e.g., "agent", "tool_use")
+- Dashboard shows connected call tree instead of isolated calls
+
+Example:
+```python
+vectorlens.serve()
+
+from langchain.chat_models import ChatOpenAI
+from langchain.agents import AgentExecutor, create_openai_functions_agent
+
+# LangChain agent automatically linked via parent_request_id
+agent = create_openai_functions_agent(llm=ChatOpenAI(), ...)
+executor = AgentExecutor(agent=agent, tools=tools)
+
+# Multi-turn calls automatically part of same conversation DAG
+result = executor.invoke({"input": "What is the capital of France?"})
+# Dashboard shows: user query → agent call → tool call → agent response
+```
 
 ## API Reference
 
@@ -387,6 +423,12 @@ VectorLens detects hallucinations by comparing semantic similarity:
 - Works well with sentence-transformers' semantic space
 - Tuned empirically on common RAG failure cases
 
+**Conditional Attribution**: Deep attribution (perturbation or attention rollout) only runs when hallucinations detected. Grounded responses skip expensive analysis (~50ms vs ~500ms savings).
+
+**Attribution Methods**:
+- **LIME perturbation** (API models): K=7 random binary masks over chunks. Ridge regression fits mask vectors to output similarity scores. Cost: exactly 7 LLM calls regardless of chunk count.
+- **Attention rollout** (local HuggingFace models): Extracts token-level attention weights from model internals. Zero extra LLM calls.
+
 **Example**:
 ```
 Output: "Transformers use self-attention to compute token relationships."
@@ -462,18 +504,23 @@ vectorlens/
 │   ├── base.py
 │   │   └── BaseInterceptor abstract class
 │   │
+│   ├── httpx_transport.py
+│   │   └── Patches httpx.AsyncClient.send / httpx.Client.send (SDK-agnostic)
+│   │
 │   ├── openai_patch.py
-│   │   └── Patches openai.resources.chat.completions.Completions.create
+│   │   └── Patches openai.resources.chat.completions.Completions.create (fallback)
 │   │
 │   ├── anthropic_patch.py
-│   │   └── Patches anthropic.resources.messages.Messages.create
+│   │   └── Patches anthropic.resources.messages.Messages.create (fallback)
 │   │
 │   ├── gemini_patch.py
-│   │   └── Patches google.generativeai.GenerativeModel.generate_content
-│   │       (supports both legacy google-generativeai and new google-genai SDKs)
+│   │   └── Patches google.generativeai.GenerativeModel.generate_content (fallback)
+│   │
+│   ├── langchain_patch.py
+│   │   └── Patches langchain.BaseChatModel + BaseRetriever
 │   │
 │   ├── chroma_patch.py
-│   │   └── Patches chromadb.api.models.Collection.Collection.query
+│   │   └── Patches chromadb.api.models.Collection.query
 │   │
 │   ├── pinecone_patch.py
 │   │   └── Patches pinecone.Index.query
@@ -483,6 +530,9 @@ vectorlens/
 │   │
 │   ├── weaviate_patch.py
 │   │   └── Patches weaviate.Client query methods
+│   │
+│   ├── pgvector_patch.py
+│   │   └── Patches SQLAlchemy AsyncSession.execute / Session.execute
 │   │
 │   └── transformers_patch.py
 │       └── Patches huggingface pipeline inference
@@ -495,10 +545,15 @@ vectorlens/
 │       └── detect() returns list[OutputToken] with hallucination flags
 │
 ├── attribution/
-│   └── perturbation.py
-│       ├── PerturbationAttributor class
-│       ├── compute() async method
-│       └── _perturb_chunk() async method
+│   ├── perturbation.py
+│   │   ├── PerturbationAttributor class
+│   │   ├── compute() async method (N+1 perturbation)
+│   │   ├── compute_lime() async method (K=7 fixed cost)
+│   │   └── _perturb_chunk() async method
+│   │
+│   └── attention.py
+│       ├── AttentionAttributor class
+│       └── compute() for local HuggingFace models
 │
 └── server/
     ├── app.py
@@ -594,7 +649,7 @@ python -m pytest tests/ --cov=vectorlens --cov-report=html
 - Opt-in only for expensive analyses
 
 ### Vector DB Support
-- Out-of-the-box: OpenAI, Anthropic, Gemini, ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace
+- Out-of-the-box: OpenAI, Anthropic, Gemini, ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace, LangChain, pgvector
 - Custom DBs: Use manual event API (see Example 2)
 - Elasticsearch, Milvus, others: Contribute a patch or use manual API
 
@@ -754,7 +809,7 @@ Tests in `tests/test_detection.py`.
 - Batch embedding calls together
 - Sample (detect only 1-in-N requests)
 - Disable perturbation attribution
-- Consider streaming responses (TODO)
+- Consider streaming responses (now supported)
 
 ## License
 
@@ -846,7 +901,6 @@ pip install "vectorlens[openai,chromadb]"
 - [ ] Attention-based attribution (no extra LLM calls)
 - [ ] SQLite session persistence
 - [ ] Custom similarity threshold configuration
-- [ ] Streaming LLM response support
 - [ ] WebSocket compression
 - [ ] Python 3.10 support
 - [ ] Multimodal RAG (images, audio)

@@ -16,7 +16,7 @@
 
 **Flow**: Interceptor → SessionBus → Pipeline → Server API → React Dashboard
 
-- **`interceptors/`**: Monkey-patches for LLM clients and vector DBs. httpx transport layer (OpenAI, Anthropic, Gemini, Mistral), plus SDK-specific patches (ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace). Each follows `BaseInterceptor` pattern: `install()`, `uninstall()`, `is_installed()`.
+- **`interceptors/`**: Monkey-patches for LLM clients and vector DBs. httpx transport layer (OpenAI, Anthropic, Gemini, Mistral), plus SDK-specific patches (ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace). LangChain framework patch. pgvector SQL interceptor. Each follows `BaseInterceptor` pattern: `install()`, `uninstall()`, `is_installed()`.
 - **`session_bus.py`**: In-process event stream with `contextvars.ContextVar` session isolation. Interceptors publish events; pipeline subscribes.
 - **`pipeline.py`**: Auto-attribution on background thread with bounded `ThreadPoolExecutor` (max_workers=3, max_pending=50). Conditional trigger: only runs deep attribution when hallucinations detected.
 - **`detection/`**: Sentence-transformers embedding + cosine similarity to detect hallucinated tokens.
@@ -52,7 +52,11 @@
 - **Tests only mock sentence-transformers by default**: Real model tests require `-m integration` flag. This slows CI — recommend running in a separate matrix job.
 - **Port 7756 must be free**: Server binds hard to 7756. No automatic fallback. If already in use, `serve()` will hang silently (add timeout logging in future).
 - **Session data is in-memory**: When server restarts, all sessions are lost. This is by design — local dev debugger, not production. For persistence, add SQLite backing (TODO).
-- **WebSocket streaming not yet supported**: httpx transport detects `text/event-stream` and skips recording; full streaming support coming in v0.2.
+- **Streaming responses now captured**: httpx transport detects `text/event-stream` and reconstructs full text after stream ends. Streaming token counts are approximate (estimated from word count, not from SSE metadata).
+- **LangChain interceptor requires langchain installed**: `pip install langchain`. Silently skips if not available.
+- **pgvector interceptor buffers rows**: SQLAlchemy result is fully fetched into memory. For very large result sets (1000+ rows), this adds memory overhead. The interceptor only activates for queries containing `<=>`, `<->`, or `<#>` operators.
+- **Streaming token counts are approximate**: Streaming responses don't include exact token counts in SSE chunks. VectorLens estimates completion_tokens from word count. Prompt tokens unavailable for streamed responses.
+- **Conversation DAG is opt-in**: Call `bus.start_conversation()` to get a `conversation_id`. The DAG is built from `parent_request_id` fields; without explicit linking, multi-turn looks like isolated calls.
 
 ## Testing Strategy
 

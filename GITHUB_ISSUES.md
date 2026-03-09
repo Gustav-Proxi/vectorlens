@@ -374,6 +374,421 @@ When enabled, all sessions are durably stored. Survives server restarts and brow
 
 ---
 
+## Issue 13: Real-Time Streaming Dashboard
+
+**Labels:** `enhancement`, `dashboard`, `v0.2.0`
+**Milestone:** v0.2.0
+
+### Description
+
+Currently, the dashboard updates on completion: user queries RAG, LLM generates response, attribution finishes, then dashboard shows results. This is a 5–15 second lag in the developer's mental model.
+
+For **streaming responses** (where tokens arrive incrementally), VectorLens should update the output panel in real-time via WebSocket. As the LLM streams tokens, the dashboard should show "Analyzing..." placeholder for each sentence, immediately replaced by red/green hallucination highlighting when that sentence's attribution is computed.
+
+This closes the feedback loop: developer sees results arriving live, not waiting for the full response + analysis.
+
+**Why this matters**: Fast feedback = faster iteration. Streaming is the default for modern RAG UIs. VectorLens must feel responsive and real-time, not slow and batch-like.
+
+**Reference files**:
+- WebSocket connection: `dashboard/src/hooks/useWebSocket.ts`
+- Output panel: `dashboard/src/components/OutputPanel.tsx`
+- API events: `vectorlens/server/api.py::websocket_endpoint()`
+- Pipeline attribution: `vectorlens/pipeline.py::_on_attribution_complete()`
+
+### Acceptance Criteria
+
+- [ ] When streaming response detected, emit partial `LLMResponseEvent` to WebSocket as tokens arrive
+- [ ] Dashboard shows partial output with "Analyzing..." gray placeholder for each sentence
+- [ ] As attribution completes for each sentence, update that sentence's styling (red/green)
+- [ ] Final response text and full attribution included in final `LLMResponseEvent`
+- [ ] Dashboard smoothly transitions from placeholder to styled output (no flicker)
+- [ ] Works for both single-shot and streaming responses (backward compatible)
+- [ ] Tests verify WebSocket partial messages are sent during streaming
+
+### Implementation Notes
+
+- Streaming responses come as `LLMResponseEvent` with `output_text` initially partial, updated over time
+- Use `streaming: bool` flag in `LLMResponseEvent` to signal real-time updates
+- Dashboard should batch WebSocket updates (e.g., 100ms debounce) to avoid overwhelming the UI
+- Graceful fallback: if streaming fails, show full response as normal (already handled by httpx transport)
+- Test with OpenAI `stream=True` and ensure partial events arrive before final event
+
+---
+
+## Issue 14: `vectorlens.assert_grounded()` Testing Helper
+
+**Labels:** `good first issue`, `testing`, `v0.2.0`
+**Milestone:** v0.2.0
+
+### Description
+
+VectorLens detects hallucinations but doesn't provide a **testing assertion**. Developers want to inline RAG quality checks:
+
+```python
+from vectorlens.testing import assert_grounded
+
+def test_rag_answers_correctly():
+    response = rag.query("What is attention?")
+    chunks = rag.get_chunks()
+
+    # Fails if groundedness < 80%
+    assert_grounded(response, chunks, min_score=0.8, message="RAG should be grounded")
+```
+
+This should work in:
+- pytest test functions
+- Jupyter notebooks
+- Standalone scripts
+
+**Why this matters**: Makes it trivial to add RAG quality gates to test suites. Developers can fail builds on hallucination regressions, not just functional bugs.
+
+**Reference files**:
+- Testing module (new): `vectorlens/testing.py`
+- Detection logic: `vectorlens/detection/hallucination.py::HallucinationDetector.detect()`
+- Attribution logic: `vectorlens/types.py` — `OutputToken`, `AttributionResult`
+
+### Acceptance Criteria
+
+- [ ] New module: `vectorlens/testing.py` with `assert_grounded()` function
+- [ ] Signature: `assert_grounded(response: str, chunks: list[str] | list[RetrievedChunk], min_score: float = 0.8, message: str = "Response not grounded")`
+- [ ] Detects hallucinations using `HallucinationDetector`
+- [ ] Calculates overall groundedness as `1.0 - (hallucinated_count / total_sentences)`
+- [ ] Raises `AssertionError` with descriptive message if `groundedness < min_score`
+- [ ] Message includes: actual groundedness, threshold, which sentences were hallucinated
+- [ ] Works in pytest (normal function), Jupyter (prints results), standalone scripts
+- [ ] Tests verify assertion passes/fails correctly
+
+### Implementation Notes
+
+- Use `HallucinationDetector()` directly (no need to go through server)
+- `chunks` parameter can be raw strings or `RetrievedChunk` objects — convert to `RetrievedChunk` with empty metadata if needed
+- Message format: `f"AssertionError: Response not grounded (actual: 65%, required: 80%)\nHallucinated: ['sentence 1', 'sentence 2']"`
+- No dependency on `vectorlens.serve()` — works standalone
+- Lazy-load the sentence-transformers model on first call (same as detection pipeline)
+
+---
+
+## Issue 15: Prompt A/B Comparison UI
+
+**Labels:** `enhancement`, `dashboard`, `v0.2.0`
+**Milestone:** v0.2.0
+
+### Description
+
+RAG developers iterate on prompt wording: "Should I say 'Answer based on context only' or 'Use only the provided documents'?" Both sound plausible, but only one might reduce hallucinations.
+
+Add a **comparison view**: Select two sessions in the sidebar → side-by-side panel showing:
+- Prompt text (left vs right)
+- Output diff (highlight differences)
+- Groundedness delta: `+12% groundedness`, `-2 hallucinated sentences`
+- Token counts and latency comparison
+- Top-5 chunk attributions side-by-side
+
+**Why this matters**: A/B testing prompts is iterative RAG development. Visual comparison makes it obvious which version performed better.
+
+**Reference files**:
+- Session sidebar: `dashboard/src/components/SessionList.tsx`
+- Session detail: `dashboard/src/components/SessionDetail.tsx`
+- API: `vectorlens/server/api.py` — add `/api/sessions/compare` endpoint
+- Types: `vectorlens/types.py` — `Session`, `AttributionResult`
+
+### Acceptance Criteria
+
+- [ ] Dashboard UI: "Compare" button visible when 2+ sessions selected (multi-select checkboxes)
+- [ ] Comparison view shows table with columns: Metric | Session A | Session B | Delta
+- [ ] Rows: Groundedness%, Hallucinated Count, Output Length, Tokens, Latency (ms), Cost (USD)
+- [ ] Color coding: green if better in B, red if worse, gray if equal
+- [ ] Text diff: side-by-side output comparison with changed words highlighted
+- [ ] Chunk attribution: top-5 chunks from each session, sorted by score, highlight ranking differences
+- [ ] "Copy comparison" button copies table as markdown (for sharing in Slack/issue)
+- [ ] Filter (optional): show only sessions with same query text
+
+### Implementation Notes
+
+- Frontend: React component `ComparisonView.tsx` with multi-select logic
+- Diff library: use `diff-match-patch` for word-level diffs
+- API endpoint: `GET /api/sessions/compare?ids=id1,id2` returns comparison payload
+- Comparison logic: compute metrics from both sessions, compute deltas
+- Performance: load metrics on-demand (not all sessions at once)
+- UX: pre-select most recent 2 sessions for quick comparison
+
+---
+
+## Issue 16: Human Annotation Layer for Ground Truth Labeling
+
+**Labels:** `enhancement`, `dashboard`, `v0.2.0`
+**Milestone:** v0.2.0
+
+### Description
+
+VectorLens detects hallucinations automatically, but it sometimes gets it wrong. A sentence might look hallucinated (low semantic match) but actually be correct. Conversely, a grounded sentence might contain a subtle factual error VectorLens misses.
+
+Add a **right-click annotation UI** for developers to provide ground truth:
+
+```
+Right-click on hallucinated sentence (red background)
+  → "Actually correct" / "Confirmed hallucination" / "Unsure"
+
+Annotations persist in localStorage + can be exported as labeled dataset
+```
+
+This lets developers:
+1. Correct VectorLens's mistakes (improve future versions)
+2. Build a labeled dataset of "good" vs "bad" sentences for fine-tuning
+3. Track confidence in the automated detection
+
+**Why this matters**: Ground truth labels = ability to validate and improve hallucination detection. Also generates training data for custom detectors.
+
+**Reference files**:
+- Output panel: `dashboard/src/components/OutputPanel.tsx`
+- Session state: `vectorlens/types.py` — add `annotations: dict[str, str]` to `Session`
+- Storage: `dashboard/src/lib/storage.ts` — localStorage persistence
+
+### Acceptance Criteria
+
+- [ ] Right-click on any output sentence → context menu with three options: "Correct", "Hallucinated", "Unsure"
+- [ ] Selected annotation persists in session state (localStorage if no persistence, SQLite if persistence enabled)
+- [ ] Annotated sentences show badge (e.g., green checkmark for "Correct", red X for "Hallucinated")
+- [ ] UI shows annotation count: "3 annotated, 2 correct, 1 hallucinated"
+- [ ] Export button: `GET /api/sessions/{id}/annotations` returns JSON list of `{sentence, is_hallucinated_by_model, human_label, confidence}`
+- [ ] Annotations can override automatic detection in dashboard display (optional: show both)
+
+### Implementation Notes
+
+- Context menu: use `contextmenu` event, position menu near cursor
+- Annotation storage: `annotations: {sentence_text: label}` in Session object
+- Badge styling: green (Correct), red (Hallucinated), yellow (Unsure)
+- Export format: CSV or JSON, suitable for training datasets
+- Future use: compare model vs human labels to measure detection accuracy
+
+---
+
+## Issue 17: pytest Plugin for RAG Test Assertions
+
+**Labels:** `enhancement`, `testing`, `help wanted`, `v0.3.0`
+**Milestone:** v0.3.0
+
+### Description
+
+VectorLens can power **regression testing for RAG pipelines**. Imagine:
+
+```python
+# conftest.py
+import pytest
+import vectorlens
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_vectorlens():
+    vectorlens.serve()
+    yield
+    vectorlens.stop()
+
+# test_rag.py
+@pytest.mark.rag(groundedness_threshold=0.8)
+def test_response_is_grounded():
+    response = rag.query("What is attention?")
+    # Auto-asserts: response must be 80%+ grounded
+    # Fails test if not
+```
+
+This issue is to create a **pytest plugin** (`pytest-vectorlens`) that:
+1. Auto-starts VectorLens on test session init
+2. Provides `@pytest.mark.rag` decorator with auto-assertions
+3. Generates test reports with hallucination metrics
+4. Integrates with pytest reporting (summary shows groundedness scores)
+
+**Why this matters**: RAG quality is not just "did the code run" — it's "are the answers grounded?" Tests should validate quality, not just functionality.
+
+**Reference files**:
+- Session API: `vectorlens/server/api.py` — get session metrics
+- Testing helpers (to be built): `vectorlens/testing.py`
+- pytest hook pattern: `pytest_configure()`, `pytest_sessionfinish()`, custom markers
+
+### Acceptance Criteria
+
+- [ ] New package: `pytest-vectorlens` (separate from main, but co-published)
+- [ ] Entry point: `pytest11 = {"vectorlens": "pytest_vectorlens.plugin"}`
+- [ ] Hook `pytest_configure()`: auto-start `vectorlens.serve()`
+- [ ] Hook `pytest_sessionfinish()`: stop VectorLens cleanly
+- [ ] Decorator: `@pytest.mark.rag(groundedness_threshold=0.8)` on test functions
+- [ ] Decorator triggers auto-assertion on test completion: collect all sessions from test, check groundedness >= threshold
+- [ ] Test report: show summary line: "RAG Quality: 4 tests passed, 2 failed (avg groundedness: 82%)"
+- [ ] CLI option: `pytest --vectorlens-threshold=0.8` to set global threshold
+- [ ] CLI option: `pytest --vectorlens-disable` to skip VectorLens
+- [ ] Example test file included in docs
+
+### Implementation Notes
+
+- pytest hooks: use `pytest_configure()` and `pytest_sessionfinish()` hooks
+- Session tracking: after each test, query VectorLens API for sessions created during that test
+- Assertion logic: use `assert_grounded()` helper from `vectorlens/testing.py`
+- Report integration: add custom pytest plugin section via `pytest_terminal_summary()` hook
+- Headless CI: auto-disable browser open with `open_browser=False`
+- Documentation: add to README with GitHub Actions example
+
+---
+
+## Issue 18: GitHub Actions Groundedness Regression Check
+
+**Labels:** `enhancement`, `integration`, `help wanted`, `v0.3.0`
+**Milestone:** v0.3.0
+
+### Description
+
+When a PR changes RAG code (prompt, retrieval strategy, chunk size), groundedness can regress. A PR that "adds a feature" might accidentally reduce answer quality by 15%.
+
+Add a **GitHub Actions workflow** that:
+1. Runs RAG test suite (via pytest-vectorlens)
+2. Compares groundedness to baseline (`vectorlens.baseline.json` in repo)
+3. Comments on PR with results: `Groundedness: 85% (was 92%, -7% regression) ⚠️`
+4. Fails PR if regression > threshold (default 5%)
+
+**Why this matters**: Quality-aware CI/CD. No more shipping hallucination regressions.
+
+**Reference files**:
+- Baseline file format (new): `.github/vectorlens.baseline.json` (example)
+- Workflow template (new): `.github/workflows/vectorlens.yml`
+- pytest plugin: `pytest-vectorlens` (from issue #17)
+- API: ability to export session metrics as JSON
+
+### Acceptance Criteria
+
+- [ ] Workflow template: `.github/workflows/vectorlens-check.yml` (can be copy-pasted into repos)
+- [ ] Workflow runs pytest-vectorlens on PR branches
+- [ ] Compares metrics (groundedness%, hallucination_count) to baseline
+- [ ] Computes delta: `(current - baseline) / baseline * 100`
+- [ ] Posts GitHub comment on PR: `Groundedness: 85% (was 92%, -7% regression) ⚠️ FAILED`
+- [ ] Fails PR if `|delta| > regression_threshold` (default 5%)
+- [ ] Allows overriding threshold via workflow input: `max-regression: 10`
+- [ ] Comments include: metric breakdown (tokens, latency, cost)
+- [ ] Baseline file format: simple JSON `{"groundedness": 0.92, "hallucination_count": 2, "avg_latency_ms": 1200}`
+- [ ] Workflow also updates baseline on `main` branch (after PR merge)
+
+### Implementation Notes
+
+- Workflow should install VectorLens: `pip install vectorlens[pytest]`
+- Run tests: `pytest --vectorlens-report=metrics.json tests/test_rag.py`
+- Compare metrics: Python script to read baseline and current metrics, compute delta
+- GitHub comment: use GitHub Actions API (via `gh` CLI or actions)
+- Baseline tracking: commit `vectorlens.baseline.json` to repo
+- Documentation: add example to README with copy-paste workflow
+
+---
+
+## Issue 19: SQLite Session Persistence
+
+**Labels:** `enhancement`, `help wanted`, `v0.3.0`
+**Milestone:** v0.3.0
+
+### Description
+
+Currently, all sessions live **in-memory only**. Server restart = lost data. This is inconvenient:
+
+- Debugging a complex hallucination, server crashes, investigation lost
+- Want to review sessions from yesterday → impossible (localStorage cleared)
+- Multiple developers need to share debugging sessions → can't (in-memory only)
+
+Add **optional SQLite persistence**:
+
+```python
+import vectorlens
+
+# With persistence (new!)
+url = vectorlens.serve(persist="./sessions.db")
+
+# Without (current behavior)
+url = vectorlens.serve()  # In-memory only (default)
+```
+
+Sessions now survive server restarts and browser clears.
+
+**Why this matters**: Builds trust in the tool. Developers can leave VectorLens running long-term, reliably access old sessions. Makes it feasible as an always-on RAG monitoring solution.
+
+**Reference files**:
+- Session structure: `vectorlens/types.py` — `Session`, `LLMRequestEvent`, `AttributionResult`
+- In-memory backend: `vectorlens/session_bus.py` — `SessionBus._sessions` dict
+- API endpoints: `vectorlens/server/api.py` — `list_sessions()`, `get_session()`, `delete_session()`
+- Server init: `vectorlens/__init__.py::serve()` function
+
+### Acceptance Criteria
+
+- [ ] New module: `vectorlens/persistence/sqlite_backend.py` with `SQLiteBackend` class
+- [ ] Methods: `save_session()`, `load_session()`, `list_sessions()`, `delete_session()`
+- [ ] Database schema: tables for `sessions`, `llm_requests`, `llm_responses`, `attributions`
+- [ ] Update `SessionBus.__init__()` to accept optional `backend` parameter
+- [ ] Add `persist: str | None = None` parameter to `vectorlens.serve()`
+- [ ] On startup with `persist=path`: auto-load all sessions from DB
+- [ ] Dashboard shows all persisted sessions (with "Cached" badge for old ones)
+- [ ] Sessions auto-sync to DB (not just in-memory)
+- [ ] Cleanup: manual command `vectorlens cleanup --older-than=30d` removes old sessions
+- [ ] Tests: verify sessions persist across server restart simulation
+
+### Implementation Notes
+
+- Use `aiosqlite` for async SQLite (non-blocking I/O)
+- Schema versioning: plan for future schema changes
+- Migration: if user enables persistence after collecting in-memory sessions, migrate them on first run
+- Concurrency: multiple VectorLens instances can safely read same DB (SQLite handles locking)
+- Compression: optionally gzip full response text in DB to save space
+- Cleanup: implement CLI command and automatic pruning (optional)
+- Tests: use in-memory SQLite (`:memory:`) for isolation
+
+---
+
+## Issue 20: Self-Contained Session Export (`vectorlens share`)
+
+**Labels:** `enhancement`, `good first issue`, `v0.3.0`
+**Milestone:** v0.3.0
+
+### Description
+
+To share a hallucination report with teammates, users currently:
+1. Screenshot the dashboard
+2. Manually copy-paste text
+3. Send via Slack/email
+
+This is tedious and error-prone. Add a **CLI command** that generates a self-contained HTML file:
+
+```bash
+vectorlens share abc123-def456
+# Outputs: session_abc123-def456.html (2–3 MB)
+
+# Share as email attachment or Slack upload
+# Recipients open HTML file in browser → see full attribution dashboard
+# No server needed to view
+```
+
+**Why this matters**: Async collaboration without tab-switching or screenshots. Teammates can explore hallucinations independently.
+
+**Reference files**:
+- Dashboard static assets: `dashboard/dist/`
+- Session API: `vectorlens/server/api.py::get_session()`
+- CLI entry point: `vectorlens/__main__.py` or `setup.py` console_scripts
+
+### Acceptance Criteria
+
+- [ ] New CLI command: `vectorlens share <session_id>` (entry point in `setup.py`)
+- [ ] Generates single HTML file with embedded React bundle + session data
+- [ ] File naming: `session_{session_id}.html` (no spaces, safe for email)
+- [ ] File size: keep under 5MB (compress assets if needed)
+- [ ] Opens in any browser without server (standalone file)
+- [ ] Shows full attribution UI: chunks panel, groundedness meter, output with highlighting
+- [ ] Includes metadata: timestamp, threshold used, vectorlens version
+- [ ] Works with both in-memory and persisted sessions
+- [ ] Error handling: if session not found, print helpful message
+
+### Implementation Notes
+
+- Build approach: embed dashboard/dist files + session JSON into HTML template via `<script>window.__SESSION_DATA__ = {...}</script>`
+- Compression: use gzip for JavaScript bundle to reduce file size
+- Styling: ensure all CSS is inlined (Tailwind classes already built into dist/main.css)
+- React hydration: dashboard loads session from `window.__SESSION_DATA__` instead of API
+- File size: target <3MB (test with real session data)
+- CLI: add to `vectorlens/__main__.py` with argparse
+- Documentation: show example in README: "Share debugging sessions without screenshots"
+
+---
+
 ## Issue 9: True Token-Level Attribution via Attention
 
 **Labels:** `research`, `hard`, `detection`

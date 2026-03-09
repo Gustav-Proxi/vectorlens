@@ -6,25 +6,25 @@
 
 **Problem solved**: RAG debugging is painful—when an LLM hallucinates, you're left guessing which chunk caused it. VectorLens automatically detects hallucinations via semantic similarity and shows chunk-level attribution without configuration.
 
-**Current status** (v0.1.2): Shipped to PyPI, httpx transport interceptor added, LIME perturbation + conditional attribution trigger, session isolation via ContextVar, pure ASGI body middleware. 117 tests passing. GitHub live.
+**Current status** (v0.1.3): Shipped to PyPI. Added streaming capture, LangChain interceptor, conversation DAG, robust chunk removal, model download progress, and pgvector native support. 117+ tests passing. GitHub live.
 
 ## Tech Stack
 
 - **Backend**: Python 3.11+, FastAPI, uvicorn, aiosqlite
 - **ML**: sentence-transformers (all-MiniLM-L6-v2, 22MB, CPU-only)
 - **Frontend**: React 18 + TypeScript, Tailwind CSS, Vite
-- **Integrations**: OpenAI, Anthropic, Google Gemini, ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace Transformers
+- **Integrations**: OpenAI, Anthropic, Google Gemini, LangChain, ChromaDB, Pinecone, FAISS, Weaviate, pgvector, HuggingFace Transformers
 - **Testing**: pytest with markers (`@pytest.mark.integration` for slow tests)
 
 ## Architecture
 
 **Data Flow**: Interceptor → SessionBus (event stream) → Pipeline (attribution) → FastAPI → WebSocket → React Dashboard
 
-- **Interceptors** (`vectorlens/interceptors/`): httpx transport-layer patches for OpenAI/Anthropic/Gemini (SDK-version-agnostic), plus SDK-specific patches for vector DBs (ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace). Each patch captures requests/responses and publishes events to the bus.
-- **SessionBus** (`session_bus.py`): Thread-safe in-process event stream with `contextvars.ContextVar` isolation. Each asyncio task and thread gets its own session. Stores up to 200 sessions with LRU eviction.
+- **Interceptors** (`vectorlens/interceptors/`): httpx transport-layer patches for OpenAI/Anthropic/Gemini/Mistral (SDK-version-agnostic), plus SDK-specific patches for vector DBs (ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace). LangChain framework patch (BaseChatModel, BaseRetriever). pgvector SQL interceptor (SQLAlchemy AsyncSession, Session). Each patch captures requests/responses and publishes events to the bus.
+- **SessionBus** (`session_bus.py`): Thread-safe in-process event stream with `contextvars.ContextVar` isolation. Each asyncio task and thread gets its own session. Stores up to 200 sessions with LRU eviction. Supports conversation DAG via `conversation_id` and `parent_request_id`.
 - **Pipeline** (`pipeline.py`): Background thread with bounded ThreadPoolExecutor (max_workers=3, max_pending=50 via Semaphore). Subscribes to `llm_response` events; runs hallucination detection + conditional deep attribution asynchronously. Tries attention rollout (local HF) → LIME perturbation (API models) as attribution fallback.
-- **Detection** (`detection/hallucination.py`): Embeds sentences and chunks using sentence-transformers, computes cosine similarity, flags hallucinated tokens if max similarity < 0.4. Returns `list[OutputToken]` with `chunk_attributions` dict.
-- **Attribution** (`attribution/perturbation.py`): Two methods: `compute()` (N+1 perturbation, expensive, backward compat) and `compute_lime()` (K=7 random masks, ridge regression, fixed cost). For local models: attention rollout (`attribution/attention.py`) extracts token-level weights.
+- **Detection** (`detection/hallucination.py`): Embeds sentences and chunks using sentence-transformers, computes cosine similarity, flags hallucinated tokens if max similarity < 0.4. Returns `list[OutputToken]` with `chunk_attributions` dict. Model download shows progress on first use.
+- **Attribution** (`attribution/perturbation.py`): Two methods: `compute()` (N+1 perturbation, expensive, backward compat) and `compute_lime()` (K=7 random masks, ridge regression, fixed cost). Robust chunk removal via 3-tier fallback (exact → 120-char prefix → first-sentence match). For local models: attention rollout (`attribution/attention.py`) extracts token-level weights.
 - **Server** (`server/app.py`, `server/api.py`): FastAPI with pure ASGI body size middleware (1MB limit), CORS (localhost-only), WebSocket Origin validation. REST endpoints for session CRUD, WebSocket for real-time event streaming.
 
 ## File Structure
@@ -42,10 +42,12 @@ vectorlens/
 │   ├── openai_patch.py      # Patches openai.resources.chat.completions.Completions.create (fallback)
 │   ├── anthropic_patch.py   # Patches anthropic.resources.messages.Messages.create (fallback)
 │   ├── gemini_patch.py      # Patches google.generativeai.GenerativeModel.generate_content (fallback)
+│   ├── langchain_patch.py   # Patches langchain BaseChatModel + BaseRetriever
 │   ├── chroma_patch.py      # Patches chromadb.api.models.Collection.query
 │   ├── pinecone_patch.py    # Patches pinecone.Index.query
 │   ├── faiss_patch.py       # Wraps faiss.Index.search
 │   ├── weaviate_patch.py    # Patches weaviate.Client query methods
+│   ├── pgvector_patch.py    # Patches SQLAlchemy AsyncSession.execute + Session.execute
 │   ├── transformers_patch.py# Patches huggingface pipeline inference
 │   └── __init__.py          # Registry: install_all(), uninstall_all(), get_installed()
 ├── detection/
@@ -60,7 +62,7 @@ vectorlens/
     ├── api.py               # REST endpoints (GET /status, /sessions, /sessions/{id}, etc.)
     └── __init__.py
 
-tests/                        # 117 tests total
+tests/                        # 117+ tests total
 ├── test_detection.py        # HallucinationDetector unit + integration tests
 ├── test_attribution.py      # PerturbationAttributor + AttentionAttributor tests
 ├── test_pipeline.py         # Auto-attribution pipeline tests
@@ -89,10 +91,10 @@ dashboard/                    # React + TypeScript + Tailwind
 ├── vite.config.ts           # Vite dev server config
 └── tsconfig.json
 
-CHANGELOG.md                  # Version history: v0.1.2 (httpx, LIME, conditional attr), v0.1.1 (security), v0.1.0
+CHANGELOG.md                  # Version history: v0.1.3 (streaming, LangChain, conversation DAG, pgvector), v0.1.2 (httpx, LIME), v0.1.1 (security), v0.1.0
 CLAUDE.md                     # Developer guide: commands, architecture, patterns, gotchas
 context.md                    # This file — project overview, architecture, current state
-devnotes.md                   # Gap analysis: streaming, LangChain integration, token-level (future); architecture decisions (httpx, LIME, ContextVar, ASGI, Semaphore)
+devnotes.md                   # Gap analysis: token-level (future); architecture decisions (httpx, LIME, ContextVar, ASGI, Semaphore, streaming, LangChain, pgvector, conversation DAG)
 README.md                     # Full documentation + examples
 pyproject.toml               # Build config, dependencies, test markers
 ```
@@ -134,6 +136,12 @@ cd dashboard && npm run build  # Produces dist/
 
 ### What's Working
 - httpx transport interceptor covers all SDKs (OpenAI, Anthropic, Gemini, Mistral)
+- Streaming capture: SSE chunks intercepted, full text reconstructed
+- LangChain integration: BaseChatModel, BaseRetriever, LCEL pipelines
+- pgvector native support: SQLAlchemy AsyncSession/Session with `<=>`, `<->`, `<#>` operators
+- Conversation DAG: parent_request_id linking, chain_step labels, conversation_id grouping
+- Robust chunk removal: 3-tier fallback (exact → 120-char prefix → first-sentence match)
+- Model download progress: yellow warning + green confirmation on first use, silent on cache hit
 - Sentence-level hallucination detection (cosine similarity, threshold 0.4)
 - Smart/conditional attribution: skips deep work when fully grounded (~50ms vs ~500ms)
 - LIME-style bounded perturbation (K=7, fixed cost regardless of chunk count)
@@ -146,14 +154,11 @@ cd dashboard && npm run build  # Produces dist/
 - Pure ASGI body middleware (POST/PUT/PATCH now work correctly, 1MB limit)
 - Bounded attribution queue (max_pending=50, tasks dropped when exhausted)
 - WebSocket Origin validation (1008 on mismatch)
-- 117 tests (unit + integration)
+- 117+ tests (unit + integration)
 - Graceful error handling (all errors logged, never crash)
 
 ### Known Gaps
 - **Sentence-level only** (not token-level): MVP uses sentence-transformers; true token-level requires attention weight extraction from local models only (OpenAI/Anthropic API models don't expose attention)
-- **No streaming support**: Fully streamed outputs (`stream=True`) are skipped by httpx transport; chat UIs universally use streaming
-- **No LangChain integration**: Only raw LLM clients patched; LCEL pipelines lack visibility into intermediate logic
-- **pgvector requires manual adapter**: No native SQL DB patching (custom DB support via manual event API)
 - **WebSocket no auth**: Assumes localhost-only; CORS restricted to `127.0.0.1:7756`, `localhost:5173` (Vite dev)
 - **Session loss on restart**: In-memory only, no SQLite backing (TODO)
 - **Port hard-coded to 7756**: No automatic fallback if busy (TODO)
@@ -163,7 +168,24 @@ cd dashboard && npm run build  # Produces dist/
 - Attribution pipeline: Non-blocking, background thread
 - Dashboard: ~100ms WebSocket latency
 - Memory: ~300MB for model + session data
-- Model: ~100MB download on first use (no progress bar, silent)
+- Model: ~100MB download on first use (progress bar on first use)
+
+## Supported Integrations
+
+| Category | Provider | Feature | Status |
+|----------|----------|---------|--------|
+| **LLM** | OpenAI | GPT-4o, GPT-4 Turbo, GPT-3.5 | ✓ |
+| **LLM** | Anthropic | Claude 3.5 Sonnet, Claude 3 Opus | ✓ |
+| **LLM** | Google Gemini | Gemini 2.0 Flash, SDK v1 & v2 | ✓ |
+| **LLM** | Mistral | All models via httpx | ✓ |
+| **LLM** | HuggingFace | Transformers pipelines | ✓ |
+| **Framework** | LangChain | BaseChatModel, BaseRetriever, LCEL | ✓ |
+| **Vector DB** | ChromaDB | in-memory & persistent | ✓ |
+| **Vector DB** | Pinecone | serverless indices | ✓ |
+| **Vector DB** | FAISS | local dense search | ✓ |
+| **Vector DB** | Weaviate | enterprise vector DB | ✓ |
+| **Vector DB** | pgvector | PostgreSQL + SQLAlchemy | ✓ |
+| **Vector DB** | Custom | via manual event API | ✓ |
 
 ## Architecture Decisions
 
@@ -178,6 +200,11 @@ cd dashboard && npm run build  # Produces dist/
 9. **Lazy-loaded models**: sentence-transformers loads on first detection call, not on import; saves upfront cost if detection never runs.
 10. **LRU session eviction**: MAX_SESSIONS=200 prevents unbounded memory growth during long debugging sessions.
 11. **WebSocket over HTTP polling**: Real-time updates with lower latency and bandwidth; still single-threaded server (uvicorn).
+12. **Streaming capture at httpx layer**: SSE chunks intercepted transparently; full text reconstructed after stream ends. Works across all SDKs using httpx.
+13. **LangChain framework patch**: Patches BaseChatModel._generate/_agenerate and BaseRetriever.invoke/ainvoke for zero-config LCEL integration. Falls back to httpx if unavailable.
+14. **pgvector SQL interceptor**: Patches SQLAlchemy execute methods; detects vector operators (`<=>`, `<->`, `<#>`); buffers rows into VectorQueryEvent. Caller still iterates normally.
+15. **Conversation DAG via parent_request_id**: Links child LLM calls to parent requests. `bus.start_conversation()` creates conversation_id for grouping. `chain_step` labels role (e.g., "agent", "tool_use").
+16. **3-tier chunk removal fallback**: Handles truncated/reformatted chunks in perturbation. Exact match → 120-char prefix → first-sentence fallback.
 
 ## Testing Strategy
 

@@ -1,7 +1,8 @@
-"""Monkey-patch interceptors for OpenAI, Anthropic, and ChromaDB.
+"""Monkey-patch interceptors for LLM providers and vector databases.
 
 This module provides a registry of interceptors that can be installed/uninstalled
-to record LLM requests/responses and vector database queries.
+to record LLM requests/responses and vector database queries (ChromaDB, Pinecone,
+FAISS, Weaviate, pgvector, etc.).
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from vectorlens.interceptors.gemini_patch import GeminiInterceptor
 from vectorlens.interceptors.httpx_transport import HttpxTransportInterceptor
 from vectorlens.interceptors.langchain_patch import LangChainInterceptor
 from vectorlens.interceptors.openai_patch import OpenAIInterceptor
+from vectorlens.interceptors.pgvector_patch import PGVectorInterceptor
 from vectorlens.interceptors.pinecone_patch import PineconeInterceptor
 from vectorlens.interceptors.transformers_patch import TransformersInterceptor
 from vectorlens.interceptors.weaviate_patch import WeaviateInterceptor
@@ -32,6 +34,7 @@ _INTERCEPTORS: dict[str, Any] = {
     "faiss": FAISSInterceptor(),
     "transformers": TransformersInterceptor(),
     "weaviate": WeaviateInterceptor(),
+    "pgvector": PGVectorInterceptor(),
 }
 
 _lock = threading.Lock()
