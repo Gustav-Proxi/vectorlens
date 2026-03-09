@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { OutputToken, TokenHeatmapEntry } from '../lib/api';
 
 interface OutputHighlighterProps {
@@ -8,8 +8,9 @@ interface OutputHighlighterProps {
 }
 
 // Map a max-attribution score [0, 1] to a green opacity for grounded tokens.
+// Minimum alpha of 30/255 ensures zero-score tokens remain visible on dark bg.
 function groundedColor(maxScore: number): string {
-  const alpha = Math.round(maxScore * 180); // 0–180 out of 255
+  const alpha = Math.max(30, Math.round(maxScore * 180)); // 30–180 out of 255
   return `rgba(92, 224, 92, ${(alpha / 255).toFixed(2)})`;
 }
 
@@ -20,6 +21,14 @@ export const OutputHighlighter: React.FC<OutputHighlighterProps> = ({
 }) => {
   const [hoveredPosition, setHoveredPosition] = useState<number | null>(null);
   const [showHeatmap, setShowHeatmap] = useState(false);
+
+  // Reset to sentence view if heatmap data disappears (e.g. WebSocket update
+  // delivers a new attribution result without a local HF model).
+  useEffect(() => {
+    if (!tokenHeatmap || tokenHeatmap.length === 0) {
+      setShowHeatmap(false);
+    }
+  }, [tokenHeatmap]);
 
   if (tokens.length === 0 && (!tokenHeatmap || tokenHeatmap.length === 0)) {
     return (

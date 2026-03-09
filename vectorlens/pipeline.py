@@ -14,7 +14,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional, Tuple
 
-from vectorlens.types import AttributionResult, LLMResponseEvent, RetrievedChunk
+from vectorlens.types import AttributionResult, LLMResponseEvent, RetrievedChunk, TokenHeatmapEntry
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
             return
 
         # Deep attribution: try attention for local HF models first
-        token_heatmap: list = []
+        token_heatmap: list[TokenHeatmapEntry] = []
         hf_model, hf_tokenizer = _try_get_hf_model_and_tokenizer(session, response_event)
         if hf_model is not None and hf_tokenizer is not None:
             try:
@@ -249,11 +249,16 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
                     if isinstance(m.get("content"), str)
                 )
                 if input_text:
+                    # Pass a copy to compute_per_token — compute() mutates
+                    # chunk.attribution_score in place and we don't want
+                    # compute_per_token to receive already-scored chunks.
+                    import copy
+                    chunks_for_heatmap = copy.deepcopy(chunks)
                     chunks = attributor.compute(
                         hf_model, hf_tokenizer, input_text, output_text, chunks
                     )
                     token_heatmap = attributor.compute_per_token(
-                        hf_model, hf_tokenizer, input_text, output_text, chunks
+                        hf_model, hf_tokenizer, input_text, output_text, chunks_for_heatmap
                     )
                     logger.debug(
                         f"Used attention rollout attribution (HF model), "

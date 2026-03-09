@@ -28,7 +28,12 @@ def distilgpt2():
         pytest.skip("torch or transformers not installed")
 
     tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
-    model = AutoModelForCausalLM.from_pretrained("distilgpt2")
+    # attn_implementation="eager" forces the model to materialise attention
+    # weight tensors. Modern transformers defaults to SDPA which returns None
+    # for attention weights, making rollout attribution impossible.
+    model = AutoModelForCausalLM.from_pretrained(
+        "distilgpt2", attn_implementation="eager"
+    )
     model.eval()
     return model, tokenizer
 
@@ -88,28 +93,6 @@ def test_compute_graceful_when_chunks_not_in_prompt(distilgpt2):
     assert chunks[0].attribution_score == pytest.approx(0.0)
 
 
-@pytest.mark.integration
-def test_compute_no_attentions_returns_zeros(sample_chunks):
-    """When model returns no attentions, all scores stay 0.0."""
-    import unittest.mock as mock
-
-    attributor = AttentionAttributor()
-
-    # Mock model that returns outputs without attentions
-    mock_model = mock.MagicMock()
-    mock_model.device = "cpu"
-    mock_outputs = mock.MagicMock()
-    mock_outputs.attentions = None
-    mock_model.return_value = mock_outputs
-
-    mock_tokenizer = mock.MagicMock()
-    import torch
-    mock_tokenizer.return_value = {"input_ids": torch.ones(1, 10, dtype=torch.long)}
-
-    chunks = attributor.compute(
-        mock_model, mock_tokenizer, "prompt", "output", list(sample_chunks)
-    )
-    assert all(c.attribution_score == 0.0 for c in chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -198,27 +181,129 @@ def test_compute_per_token_chunk_ids_present(distilgpt2, sample_chunks):
 
 
 def test_compute_per_token_returns_empty_on_import_error():
-    """Returns [] gracefully when torch is not importable."""
-    import builtins
-    import importlib
+    """Returns [] gracefully when torch is not importable.
+
+    Uses sys.modules injection rather than builtins.__import__ mocking
+    to correctly bypass Python's module cache (torch may already be imported
+    by other tests in the same process).
+    """
+    import sys
     import unittest.mock as mock
 
     attributor = AttentionAttributor()
-
-    original_import = builtins.__import__
-
-    def mock_import(name, *args, **kwargs):
-        if name == "torch":
-            raise ImportError("mocked")
-        return original_import(name, *args, **kwargs)
-
     chunks = [RetrievedChunk(chunk_id="c1", text="hello", score=0.5)]
 
-    with mock.patch("builtins.__import__", side_effect=mock_import):
-        # Need to reload to trigger the import inside compute_per_token
+    # Remove torch from cache and replace with a sentinel that raises ImportError
+    with mock.patch.dict(sys.modules, {"torch": None}):
         result = attributor.compute_per_token(
             object(), object(), "prompt", "output", chunks
         )
 
-    # Should return [] without raising
     assert result == []
+
+
+def test_compute_no_attentions_returns_zeros_unit():
+    """When model.attentions is None, all chunk scores stay 0.0 (no HF model needed)."""
+    import unittest.mock as mock
+    import torch
+
+    attributor = AttentionAttributor()
+    chunks = [
+        RetrievedChunk(chunk_id="c1", text="hello world", score=0.9),
+        RetrievedChunk(chunk_id="c2", text="foo bar", score=0.5),
+    ]
+
+    # Build a real tensor for input_ids so .to(device) works
+    real_input_ids = torch.ones(1, 5, dtype=torch.long)
+
+    mock_model = mock.MagicMock()
+    mock_model.device = "cpu"
+    mock_outputs = mock.MagicMock()
+    mock_outputs.attentions = None
+    mock_model.return_value = mock_outputs
+
+    mock_tokenizer = mock.MagicMock()
+    mock_tokenizer.return_value = {"input_ids": real_input_ids}
+
+    result = attributor.compute(mock_model, mock_tokenizer, "hello world", "test", chunks)
+    assert all(c.attribution_score == 0.0 for c in result)
+
+
+def test_compute_per_token_equal_weight_fallback():
+    """When no chunk text appears in the prompt, equal weights are assigned."""
+    import unittest.mock as mock
+    import torch
+
+    attributor = AttentionAttributor()
+    chunks = [
+        RetrievedChunk(chunk_id="c1", text="chunk text not in prompt at all zzzz", score=0.9),
+        RetrievedChunk(chunk_id="c2", text="another chunk also absent xyz", score=0.5),
+    ]
+
+    # Mock model that returns attentions for a short sequence
+    seq_len = 6
+    mock_model = mock.MagicMock()
+    mock_model.device = "cpu"
+    mock_outputs = mock.MagicMock()
+    # Single layer, single head, uniform attention
+    attn = torch.ones(1, 1, seq_len, seq_len) / seq_len
+    mock_outputs.attentions = [attn]
+    mock_model.return_value = mock_outputs
+
+    mock_tokenizer = mock.MagicMock()
+    prompt_ids = torch.ones(1, 4, dtype=torch.long)
+    output_ids = torch.ones(1, 2, dtype=torch.long)
+    mock_tokenizer.side_effect = lambda text, **kw: {
+        "input_ids": prompt_ids if kw.get("add_special_tokens", True) else output_ids
+    }
+    mock_tokenizer.return_value = {"input_ids": prompt_ids}
+    mock_tokenizer.convert_ids_to_tokens = mock.MagicMock(return_value=["tok1", "tok2"])
+    mock_tokenizer.convert_tokens_to_string = mock.MagicMock(side_effect=lambda ts: ts[0])
+    # offset_mapping returns empty (no chars map to tokens → all spans missing)
+    mock_tokenizer.return_value = {
+        "input_ids": prompt_ids,
+        "offset_mapping": [(0, 0)] * 4,
+    }
+
+    entries = attributor.compute_per_token(mock_model, mock_tokenizer, "hello", "ok", chunks)
+    # With all spans missing, each token should get equal weights across chunks
+    for entry in entries:
+        for chunk_id in ["c1", "c2"]:
+            assert abs(entry.chunk_attributions.get(chunk_id, 0) - 0.5) < 0.01
+
+
+def test_compute_per_token_empty_prompt():
+    """Empty prompt_text yields equal-weight fallback without crashing."""
+    import unittest.mock as mock
+    import torch
+
+    attributor = AttentionAttributor()
+    chunks = [RetrievedChunk(chunk_id="c1", text="some text", score=0.5)]
+
+    # Empty prompt → prompt_len=0, all chunk spans None
+    mock_model = mock.MagicMock()
+    mock_model.device = "cpu"
+    attn = torch.ones(1, 1, 3, 3) / 3
+    mock_outputs = mock.MagicMock()
+    mock_outputs.attentions = [attn]
+    mock_model.return_value = mock_outputs
+
+    prompt_ids = torch.zeros(1, 0, dtype=torch.long)
+    output_ids = torch.ones(1, 3, dtype=torch.long)
+
+    mock_tokenizer = mock.MagicMock()
+    mock_tokenizer.convert_ids_to_tokens = mock.MagicMock(return_value=["a", "b", "c"])
+    mock_tokenizer.convert_tokens_to_string = mock.MagicMock(side_effect=lambda ts: ts[0])
+
+    def _encode(text, **kw):
+        if kw.get("add_special_tokens", True):
+            return {"input_ids": prompt_ids, "offset_mapping": []}
+        return {"input_ids": output_ids}
+
+    mock_tokenizer.side_effect = _encode
+
+    # Should not crash even with empty prompt
+    entries = attributor.compute_per_token(mock_model, mock_tokenizer, "", "abc", chunks)
+    # output_len=3 → may return [] if output_len=0 check triggers, or entries if not
+    # Either way, no exception
+    assert isinstance(entries, list)
