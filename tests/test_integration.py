@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from vectorlens.pipeline import setup_auto_attribution, _on_llm_response
+from vectorlens.pipeline import setup_auto_attribution, _on_llm_response, _run_attribution
 from vectorlens.session_bus import SessionBus
 from vectorlens.types import (
     LLMRequestEvent,
@@ -112,12 +112,8 @@ def test_full_rag_tracing_pipeline():
     assert len(session.llm_responses) == 1
     assert session.llm_responses[0].output_text == response_text
 
-    # Step 4: Subscribe the attribution handler and let it run
-    bus.subscribe("llm_response", _on_llm_response)
-
-    # Wait for background attribution thread to complete
-    # (real model loading + inference takes time - first call loads model)
-    time.sleep(8)
+    # Step 4: Run attribution directly (synchronous, uses local bus)
+    _run_attribution(resp, _bus=bus)
 
     # Step 5: Verify attribution was computed
     session = bus.get_session(session.id)
@@ -198,17 +194,12 @@ def test_multiple_vector_queries_in_session():
     )
     bus.record_llm_request(llm_req)
 
-    # Subscribe and record response
-    bus.subscribe("llm_response", _on_llm_response)
-
     resp = LLMResponseEvent(
         output_text="The Statue of Liberty is in New York.",
         request_id=llm_req.id,
     )
     bus.record_llm_response(resp)
-
-    # Wait for attribution
-    time.sleep(8)
+    _run_attribution(resp, _bus=bus)
 
     session = bus.get_session(session.id)
     assert len(session.attributions) == 1
@@ -230,7 +221,6 @@ def test_attribution_with_no_vector_query():
     llm_req = LLMRequestEvent(model="test")
     bus.record_llm_request(llm_req)
 
-    bus.subscribe("llm_response", _on_llm_response)
 
     resp = LLMResponseEvent(
         output_text="Some output without any context.",
@@ -273,7 +263,6 @@ def test_real_semantic_similarity_detection():
     llm_req = LLMRequestEvent(model="test", vector_query_id=vq.id)
     bus.record_llm_request(llm_req)
 
-    bus.subscribe("llm_response", _on_llm_response)
 
     # Output with semantic similarity:
     # "London is the capital of England." — exact match, grounded
@@ -291,7 +280,7 @@ def test_real_semantic_similarity_detection():
     )
     bus.record_llm_response(resp)
 
-    time.sleep(8)
+    _run_attribution(resp, _bus=bus)
 
     session = bus.get_session(session.id)
     assert len(session.attributions) == 1
@@ -339,7 +328,6 @@ def test_chunk_attribution_scores_with_real_detection():
     llm_req = LLMRequestEvent(model="test", vector_query_id=vq.id)
     bus.record_llm_request(llm_req)
 
-    bus.subscribe("llm_response", _on_llm_response)
 
     # Output mentioning both concepts
     response_text = (
@@ -353,7 +341,7 @@ def test_chunk_attribution_scores_with_real_detection():
     )
     bus.record_llm_response(resp)
 
-    time.sleep(8)
+    _run_attribution(resp, _bus=bus)
 
     session = bus.get_session(session.id)
     attr = session.attributions[0]
@@ -406,7 +394,6 @@ def test_session_isolation():
     bus.record_vector_query(vq2)
 
     # Record responses for both
-    bus.subscribe("llm_response", _on_llm_response)
 
     llm_req1 = LLMRequestEvent(
         model="test",
@@ -436,7 +423,8 @@ def test_session_isolation():
     )
     bus.record_llm_response(resp2)
 
-    time.sleep(8)
+    _run_attribution(resp1, _bus=bus)
+    _run_attribution(resp2, _bus=bus)
 
     # Verify sessions are isolated
     retrieved_session1 = bus.get_session(session1.id)

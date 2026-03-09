@@ -139,10 +139,13 @@ def _make_llm_caller(provider: str, model: str) -> Optional[Callable]:
     return None
 
 
-def _run_attribution(response_event: LLMResponseEvent) -> None:
+def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None:
     """Run hallucination detection and chunk attribution for an LLM response."""
     try:
-        from vectorlens.session_bus import bus
+        if _bus is None:
+            from vectorlens.session_bus import bus
+        else:
+            bus = _bus
         from vectorlens.detection.hallucination import HallucinationDetector
 
         output_text = response_event.output_text
