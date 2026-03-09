@@ -60,8 +60,9 @@ export const SessionList: React.FC<SessionListProps> = ({
 
       {/* Offline Banner */}
       {isShowingCached && (
-        <div className="p-3 bg-[#2a2519] border-b border-[#8a7a5a] text-[#d4a574] text-xs">
-          Server offline — showing session history
+        <div className="px-3 py-1.5 border-b border-[#333] text-[#666] text-xs flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#555] inline-block"></span>
+          Session history
         </div>
       )}
 
