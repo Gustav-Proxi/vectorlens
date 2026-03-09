@@ -94,7 +94,7 @@ export async function fetchSession(id: string): Promise<Session> {
 
 export async function newSession(): Promise<Session> {
   try {
-    const response = await fetch(`${API_BASE}/sessions`, {
+    const response = await fetch(`${API_BASE}/sessions/new`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
