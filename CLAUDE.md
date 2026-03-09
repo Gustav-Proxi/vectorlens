@@ -36,6 +36,11 @@
 ## Known Issues / Gotchas
 
 - **BGE-M3 and multiprocessing models on macOS**: Must call `model.warmup()` before `vectorlens.serve()`. The model spawns subprocesses; MPS warmup needs to happen in main process. See `RAG/scripts/test_vectorlens.py::test_rag_with_bge()`.
+- **CORS is localhost-only by design**: `allow_origins` is restricted to `127.0.0.1:7756`. If you need Vite dev server access add `http://localhost:5173` to the list in `server/app.py`. Do NOT use `"*"` — that allows any webpage to steal session data.
+- **MAX_SESSIONS=200**: Oldest sessions are LRU-evicted when limit is hit. Increase in `session_bus.py` if needed, but watch memory.
+- **Attribution pool is bounded**: `ThreadPoolExecutor(max_workers=3)` in `pipeline.py`. If you need faster attribution on many concurrent calls, increase max_workers.
+- **Interceptors never raise**: All `bus.record_*()` calls are wrapped in try/except. If VectorLens silently stops recording, check DEBUG logs — the exception is logged there.
+- **Vector DB scores are clamped [0,1]**: Done defensively in all interceptors. If you see attribution scores at exactly 0.0 or 1.0 for many chunks, the raw scores from your DB may be outside range.
 - **Dashboard dist must be rebuilt**: If frontend changes but you don't run `npm run build`, server will serve stale assets. No automatic rebuild during dev.
 - **Tests only mock sentence-transformers by default**: Real model tests require `-m integration` flag. This slows CI — recommend running in a separate matrix job.
 - **Port 7756 must be free**: Server binds hard to 7756. No automatic fallback. If already in use, `serve()` will hang silently (add timeout logging in future).

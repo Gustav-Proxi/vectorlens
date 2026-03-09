@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-03-09
+
+### Security
+- **CORS restricted to localhost-only** — changed `allow_origins=["*"]` to explicit localhost allowlist; prevents cross-origin exfiltration of session data from malicious webpages
+- **Interceptors: bus errors never propagate to user code** — all `bus.record_*()` calls wrapped in try/except; VectorLens bugs can no longer crash your RAG pipeline
+- **Thread-safe install/uninstall** — per-instance `threading.Lock` prevents double-patching race condition when `install()` called concurrently
+- **Score normalization** — ChromaDB, FAISS, Weaviate, Pinecone scores clamped to `[0.0, 1.0]`; previously negative scores possible with non-normalized embeddings
+- **Request body size limit** — 1MB cap via Starlette middleware; prevents memory DoS via large POST bodies
+- **Messages input validation** — `None` or non-list `messages` kwarg now coerced to `[]` safely
+
+### Fixed
+- **Thread explosion** — attribution pipeline now uses `ThreadPoolExecutor(max_workers=3)` instead of spawning a new thread per LLM response
+- **Session memory unbounded** — `SessionBus` now enforces `MAX_SESSIONS=200` with LRU eviction of oldest sessions
+- **Dashboard NaN crash** — `chunk.score.toFixed()` on null/NaN score no longer crashes React render; `safeFixed()` helper added
+- **localStorage freeze** — sessions exceeding 4MB now stored as metadata-only summaries; prevents synchronous JSON.stringify blocking browser tab
+- **Null-safe session ID** — `session.id.substring()` guarded against null
+- **Polling reduced** — idle poll interval changed from 2s to 3s
+
 ## [0.1.0] — 2026-03-08
 
 ### Added
