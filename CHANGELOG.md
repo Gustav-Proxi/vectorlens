@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-03-09
+
+### Added
+- **httpx transport-layer interceptor** (`interceptors/httpx_transport.py`) — patches `httpx.AsyncClient.send` and `httpx.Client.send` instead of SDK internals. SDK-version-agnostic. Covers OpenAI, Anthropic, Gemini, Mistral. Registered as `"httpx"` interceptor.
+- **LIME-style bounded perturbation** (`attribution/perturbation.py`) — new `compute_lime()` method for fixed-cost attribution (K=7 LLM calls regardless of chunk count). Uses ridge regression on random masks to compute per-chunk importance weights. Replaces unbounded N+1 approach.
+- **Smart/conditional attribution trigger** (`pipeline.py`) — only runs deep attribution when hallucinations are detected. Fully grounded responses skip deep attribution (~50ms vs ~500ms savings). For local HuggingFace models: uses attention rollout; for API models: uses LIME bounded perturbation.
+- **Attention rollout wiring** (`attribution/attention.py`) — integrated into pipeline for zero-extra-cost attribution on local models.
+
+### Fixed
+- **ContextVar session isolation (HIGH)** — `_active_session_id` replaced with `contextvars.ContextVar`. Each asyncio task and thread gets its own session. Prevents cross-thread data bleed in concurrent RAG servers.
+- **ASGI body middleware (CRITICAL)** — replaced `BaseHTTPMiddleware` with pure ASGI class wrapping `receive()`. POST/PUT/PATCH now work correctly. Previous implementation's `_stream` hack was silently ignored by Starlette.
+- **Bounded attribution queue (HIGH)** — `threading.Semaphore(50)` gates task submission to `ThreadPoolExecutor`. Tasks dropped when >50 pending instead of growing unbounded. Prevents OOM under high load. Check DEBUG logs for "Attribution queue full" messages.
+- **WebSocket Origin validation** — checked before `accept()`, 1008 (Policy Violation) on mismatch.
+- **Attention.py zero-division clamp** — prevents NaN in edge cases.
+
 ## [0.1.1] — 2026-03-09
 
 ### Security
