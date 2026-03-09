@@ -99,6 +99,19 @@ class OutputToken:
 
 
 @dataclass
+class TokenHeatmapEntry:
+    """A single output subword token with per-chunk attention attribution.
+
+    Populated by AttentionAttributor.compute_per_token() for local HF models.
+    Each entry corresponds to one transformer subword token in the output.
+    """
+    text: str = ""          # decoded subword token text (spaces preserved)
+    position: int = 0       # 0-based index in the output token sequence
+    # chunk_id -> normalized attention weight [0, 1]
+    chunk_attributions: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class AttributionResult:
     """Result of running attribution on an LLM response."""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -110,6 +123,9 @@ class AttributionResult:
     output_tokens: list[OutputToken] = field(default_factory=list)
     overall_groundedness: float = 0.0   # 0-1, 1 = fully grounded
     hallucinated_spans: list[tuple[int, int]] = field(default_factory=list)  # (start, end) token indices
+    # Per-subword-token heatmap — set only when a local HF model is available.
+    # Empty list means sentence-level detection only (default for API models).
+    token_heatmap: list[TokenHeatmapEntry] = field(default_factory=list)
 
 
 @dataclass

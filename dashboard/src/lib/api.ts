@@ -15,6 +15,12 @@ export interface OutputToken {
   chunk_attributions: Record<string, number>;
 }
 
+export interface TokenHeatmapEntry {
+  text: string;
+  position: number;
+  chunk_attributions: Record<string, number>;
+}
+
 export interface AttributionResult {
   id: string;
   session_id: string;
@@ -22,6 +28,7 @@ export interface AttributionResult {
   output_tokens: OutputToken[];
   overall_groundedness: number;
   hallucinated_spans: [number, number][];
+  token_heatmap?: TokenHeatmapEntry[];
 }
 
 export interface VectorQuery {

@@ -209,6 +209,7 @@ export const AttributionView: React.FC<AttributionViewProps> = ({
             <div className="bg-[#1a1a1a] rounded p-4 border border-[#2a2a2a]">
               <OutputHighlighter
                 tokens={attribution.output_tokens}
+                tokenHeatmap={attribution.token_heatmap}
                 onChunkHover={setHoveredChunkId}
               />
             </div>

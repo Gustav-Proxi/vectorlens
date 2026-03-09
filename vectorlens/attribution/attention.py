@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from vectorlens.types import RetrievedChunk
+from vectorlens.types import RetrievedChunk, TokenHeatmapEntry
 
 if TYPE_CHECKING:
     import torch
@@ -162,6 +162,135 @@ class AttentionAttributor:
             for chunk in chunks:
                 chunk.attribution_score = 0.0
             return chunks
+
+    def compute_per_token(
+        self,
+        model: Any,
+        tokenizer: Any,
+        prompt_text: str,
+        output_text: str,
+        chunks: list[RetrievedChunk],
+    ) -> list[TokenHeatmapEntry]:
+        """Compute per-output-subword-token chunk attribution via attention rollout.
+
+        Unlike compute(), which returns one score per chunk using only the last
+        output token's attention, this method runs the full [prompt + output]
+        sequence through the model and returns one TokenHeatmapEntry per output
+        subword token, each with a chunk_attributions dict.
+
+        Algorithm:
+        1. Tokenize prompt and output separately to find the prompt/output boundary
+        2. Concatenate and run model with output_attentions=True
+        3. Compute attention rollout over the full sequence
+        4. For each output position p: extract rollout[p, 0:prompt_len] — attention
+           from output token p to each prompt token — and map spans to chunks
+        5. Normalize chunk scores per output token
+
+        Returns:
+            List of TokenHeatmapEntry (one per output subword), or [] on failure.
+        """
+        try:
+            import torch
+        except ImportError:
+            return []
+
+        try:
+            # Tokenize prompt and output separately to know the boundary.
+            # add_special_tokens=False for output so we don't double-count BOS.
+            prompt_enc = tokenizer(prompt_text, return_tensors="pt", add_special_tokens=True)
+            output_enc = tokenizer(output_text, return_tensors="pt", add_special_tokens=False)
+
+            prompt_ids = prompt_enc["input_ids"]   # (1, P)
+            output_ids = output_enc["input_ids"]   # (1, O)
+            prompt_len = prompt_ids.shape[1]
+            output_len = output_ids.shape[1]
+
+            if output_len == 0:
+                return []
+
+            # Concatenate into one sequence
+            full_ids = torch.cat([prompt_ids, output_ids], dim=1)
+            full_len = full_ids.shape[1]
+
+            device = model.device
+            full_ids = full_ids.to(device)
+
+            with torch.no_grad():
+                outputs = model(full_ids, output_attentions=True)
+
+            if not hasattr(outputs, "attentions") or outputs.attentions is None:
+                logger.warning("Model does not support output_attentions; skipping token heatmap")
+                return []
+
+            # Attention rollout over full sequence
+            rollout = torch.eye(full_len, device=device)
+            for layer_attn in outputs.attentions:
+                attn = layer_attn[0].mean(dim=0)  # (full_len, full_len)
+                attn = 0.5 * attn + 0.5 * torch.eye(full_len, device=device)
+                row_sums = attn.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+                attn = attn / row_sums
+                rollout = rollout @ attn
+
+            # Build char→prompt-token mapping (only for prompt text)
+            char_to_token = self._get_char_to_token_mapping(tokenizer, prompt_text)
+
+            # Precompute chunk spans in prompt token space
+            chunk_token_spans: list[tuple[str, int, int] | None] = []
+            for chunk in chunks:
+                start_char = prompt_text.find(chunk.text[:50])
+                if start_char == -1:
+                    chunk_token_spans.append(None)
+                    continue
+                end_char = start_char + len(chunk.text)
+                ts = char_to_token.get(start_char)
+                te = char_to_token.get(end_char - 1)
+                if ts is None or te is None:
+                    chunk_token_spans.append(None)
+                else:
+                    chunk_token_spans.append((chunk.chunk_id, ts, te + 1))
+
+            # Decode output subword token strings for display
+            output_token_ids_list = output_ids[0].tolist()
+            output_token_texts = tokenizer.convert_ids_to_tokens(output_token_ids_list)
+
+            entries: list[TokenHeatmapEntry] = []
+            for i, tok_text in enumerate(output_token_texts):
+                pos = prompt_len + i  # position in full_ids sequence
+
+                # attention from this output token to all prompt positions
+                attn_to_prompt = rollout[pos, :prompt_len]  # (prompt_len,)
+
+                raw_scores: dict[str, float] = {}
+                for chunk, span in zip(chunks, chunk_token_spans):
+                    if span is None:
+                        raw_scores[chunk.chunk_id] = 0.0
+                    else:
+                        _, ts, te = span
+                        raw_scores[chunk.chunk_id] = attn_to_prompt[ts:te].sum().item()
+
+                total = sum(raw_scores.values())
+                if total > 0:
+                    norm_scores = {k: v / total for k, v in raw_scores.items()}
+                else:
+                    n = len(chunks)
+                    norm_scores = {k: 1.0 / n if n else 0.0 for k in raw_scores}
+
+                # Decode subword to display text (strip sentencepiece/BPE markers)
+                display = (tok_text or "")
+                for marker in ("Ġ", "▁", "##"):
+                    display = display.replace(marker, " " if marker != "##" else "")
+
+                entries.append(TokenHeatmapEntry(
+                    text=display,
+                    position=i,
+                    chunk_attributions=norm_scores,
+                ))
+
+            return entries
+
+        except Exception as e:
+            logger.warning(f"compute_per_token failed: {e}")
+            return []
 
     def _get_char_to_token_mapping(
         self, tokenizer: Any, text: str

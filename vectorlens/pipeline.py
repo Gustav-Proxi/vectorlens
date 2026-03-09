@@ -232,6 +232,7 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
             return
 
         # Deep attribution: try attention for local HF models first
+        token_heatmap: list = []
         hf_model, hf_tokenizer = _try_get_hf_model_and_tokenizer(session, response_event)
         if hf_model is not None and hf_tokenizer is not None:
             try:
@@ -251,7 +252,13 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
                     chunks = attributor.compute(
                         hf_model, hf_tokenizer, input_text, output_text, chunks
                     )
-                    logger.debug("Used attention rollout attribution (HF model)")
+                    token_heatmap = attributor.compute_per_token(
+                        hf_model, hf_tokenizer, input_text, output_text, chunks
+                    )
+                    logger.debug(
+                        f"Used attention rollout attribution (HF model), "
+                        f"{len(token_heatmap)} token heatmap entries"
+                    )
             except Exception as e:
                 logger.debug(
                     f"Attention attribution failed, skipping: {e}", exc_info=False
@@ -292,6 +299,7 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
             output_tokens=output_tokens,
             overall_groundedness=overall_groundedness,
             hallucinated_spans=hallucinated_spans,
+            token_heatmap=token_heatmap,
         )
 
         bus.record_attribution(result)
