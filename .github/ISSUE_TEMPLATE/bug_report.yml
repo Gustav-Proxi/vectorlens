@@ -1,0 +1,100 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug", "needs-triage"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the form below to help us investigate.
+
+  - type: input
+    id: version
+    attributes:
+      label: VectorLens version
+      placeholder: "0.1.0"
+      description: "Output of `pip show vectorlens`"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Which provider(s) are involved?
+      description: "Check all that apply"
+      multiple: true
+      options:
+        - OpenAI
+        - Anthropic
+        - Gemini
+        - ChromaDB
+        - Pinecone
+        - FAISS
+        - Weaviate
+        - HuggingFace
+        - pgvector/custom
+        - Other
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: "Describe the bug clearly. Include error messages and stack traces."
+      placeholder: |
+        When I ran X, I expected Y to happen, but Z happened instead.
+
+        Error message:
+        ```
+        Traceback (most recent call last):
+        ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction code
+      description: "Smallest code snippet that shows the problem"
+      placeholder: |
+        import vectorlens
+        vectorlens.serve()
+
+        # ... your RAG code here ...
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: |
+        The dashboard should show...
+        The hallucination detection should...
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11.5"
+      description: "Output of `python --version`"
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.3 / Ubuntu 22.04 / Windows 11"
+      description: "Where you encountered the bug"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched for existing issues
+          required: true
+        - label: I have read the README and CONTRIBUTING.md
+          required: true

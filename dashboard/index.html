@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VectorLens</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          colors: {
+            'vectorlens-bg': '#0f0f0f',
+            'vectorlens-surface': '#1a1a1a',
+            'vectorlens-border': '#2a2a2a',
+            'vectorlens-accent-red': '#e05c5c',
+            'vectorlens-accent-green': '#5ce05c',
+            'vectorlens-text': '#e8e8e8',
+          },
+        },
+      };
+    </script>
+  </head>
+  <body class="bg-[#0f0f0f] text-[#e8e8e8]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

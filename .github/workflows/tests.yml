@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e ".[all]"
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -m "not integration" -v --tb=short
+
+      - name: Build dashboard
+        run: |
+          cd dashboard
+          npm install
+          npm run build
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || contains(github.head_ref, 'integration')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[all]"
+
+      - name: Run integration tests
+        run: python -m pytest tests/ -m integration -v --tb=short
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        if: always()
+        with:
+          files: ./coverage.xml
+          flags: integration

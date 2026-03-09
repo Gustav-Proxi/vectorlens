@@ -1,0 +1,68 @@
+name: Feature Request
+description: Suggest a new interceptor, improvement, or feature
+labels: ["enhancement"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the feature idea! Help us understand what you need.
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: "What type of feature is this?"
+      options:
+        - New LLM interceptor
+        - New vector DB interceptor
+        - Attribution improvement
+        - Dashboard feature
+        - Performance optimization
+        - API improvement
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: "What pain point does this solve?"
+      placeholder: |
+        Currently, I have to manually...
+        There's no way to...
+        It would be helpful if...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: "How should this work?"
+      placeholder: |
+        Add a new method called...
+        Add support for [provider] by...
+        Modify the dashboard to show...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: "What other approaches did you think of?"
+      placeholder: |
+        Alternative 1: ...
+        Alternative 2: ...
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution interest
+      options:
+        - label: I'd like to implement this
+        - label: I can help review/test
+        - label: I can only describe the need
