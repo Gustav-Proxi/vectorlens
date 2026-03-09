@@ -24,12 +24,12 @@ def client():
 @pytest.fixture
 def fresh_bus():
     """Provide fresh bus state for tests."""
-    # Clear existing sessions
     bus._sessions.clear()
+    bus._session_order.clear()
     bus._active_session_id = None
     yield bus
-    # Cleanup
     bus._sessions.clear()
+    bus._session_order.clear()
     bus._active_session_id = None
 
 

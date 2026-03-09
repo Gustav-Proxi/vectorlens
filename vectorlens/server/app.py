@@ -22,16 +22,48 @@ logger = logging.getLogger(__name__)
 # Max request body size: 1MB — prevents memory exhaustion via large POST bodies
 MAX_REQUEST_BODY = 1 * 1024 * 1024
 
+# Allowed WebSocket origins — CORS does NOT apply to WebSockets, so we enforce manually
+_ALLOWED_ORIGINS = {
+    "http://127.0.0.1:7756",
+    "http://localhost:7756",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+}
+
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Reject requests with bodies larger than MAX_REQUEST_BODY."""
+    """Reject requests with bodies larger than MAX_REQUEST_BODY.
+
+    Reads the actual stream rather than trusting Content-Length, which is
+    omitted for Transfer-Encoding: chunked requests — the previous
+    content-length-only check could be bypassed to stream unbounded payloads.
+    """
     async def dispatch(self, request: Request, call_next):
+        # Fast path: honour Content-Length when present
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > MAX_REQUEST_BODY:
-            return JSONResponse(
-                status_code=413,
-                content={"detail": "Request body too large"},
-            )
+        if content_length:
+            if int(content_length) > MAX_REQUEST_BODY:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "Request body too large"},
+                )
+            return await call_next(request)
+
+        # Chunked / unknown length: read up to limit + 1 byte to detect oversize
+        if request.method in ("POST", "PUT", "PATCH"):
+            body = b""
+            async for chunk in request.stream():
+                body += chunk
+                if len(body) > MAX_REQUEST_BODY:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "Request body too large"},
+                    )
+            # Re-inject the fully-read body so downstream can read it
+            async def _body_stream():
+                yield body
+            request._stream = _body_stream()  # type: ignore[attr-defined]
+
         return await call_next(request)
 
 
@@ -135,7 +167,18 @@ def _setup_bus_subscriptions() -> None:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    """WebSocket endpoint for real-time event streaming."""
+    """WebSocket endpoint for real-time event streaming.
+
+    CORS does not apply to WebSockets — browsers allow cross-origin WS
+    connections silently. We must validate the Origin header ourselves
+    to prevent Cross-Site WebSocket Hijacking (CSWSH).
+    """
+    origin = websocket.headers.get("origin", "")
+    if origin and origin not in _ALLOWED_ORIGINS:
+        logger.warning(f"WebSocket rejected: disallowed origin '{origin}'")
+        await websocket.close(code=1008)  # 1008 = Policy Violation
+        return
+
     await websocket.accept()
     with _ws_lock:
         _connected_websockets.add(websocket)

@@ -308,15 +308,9 @@ async def create_session() -> SessionSummary:
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(session_id: str) -> None:
     """Delete a session."""
-    session = bus.get_session(session_id)
-    if not session:
+    deleted = bus.delete_session(session_id)
+    if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session {session_id} not found",
+            detail="Session not found",
         )
-    # Remove from internal dict
-    with bus._lock:
-        if session_id in bus._sessions:
-            del bus._sessions[session_id]
-            if bus._active_session_id == session_id:
-                bus._active_session_id = None
