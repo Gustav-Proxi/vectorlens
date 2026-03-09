@@ -20,8 +20,15 @@ logger = logging.getLogger(__name__)
 _attribution_lock = threading.Lock()
 _installed = False
 
-# Bounded pool: max 3 concurrent attribution jobs (prevents thread exhaustion)
+# Bounded pool: max 3 concurrent attribution workers.
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="vectorlens-attr")
+
+# Bounded pending queue: max 50 tasks waiting for a free worker.
+# ThreadPoolExecutor uses an unbounded SimpleQueue internally — without a
+# cap, high-throughput LLM calls pile up in memory until OOM.
+# Tasks are DROPPED (not blocked) when full; attribution is best-effort.
+_MAX_PENDING = 50
+_pending_sem = threading.Semaphore(_MAX_PENDING)
 
 
 def setup_auto_attribution() -> None:
@@ -33,12 +40,26 @@ def setup_auto_attribution() -> None:
         from vectorlens.session_bus import bus
         bus.subscribe("llm_response", _on_llm_response)
         _installed = True
-        logger.info("Auto-attribution pipeline active (max_workers=3)")
+        logger.info("Auto-attribution pipeline active (max_workers=3, max_pending=50)")
 
 
 def _on_llm_response(event: LLMResponseEvent) -> None:
-    """Triggered after every LLM response — submits to bounded pool."""
-    _executor.submit(_run_attribution, event)
+    """Triggered after every LLM response — submits to bounded pool.
+
+    Drops the task if the pending queue is full rather than letting
+    the queue grow without bound and exhaust memory.
+    """
+    if not _pending_sem.acquire(blocking=False):
+        logger.debug("Attribution queue full (>50 pending), dropping task")
+        return
+
+    def _run_and_release() -> None:
+        try:
+            _run_attribution(event)
+        finally:
+            _pending_sem.release()
+
+    _executor.submit(_run_and_release)
 
 
 def _try_get_hf_model_and_tokenizer(

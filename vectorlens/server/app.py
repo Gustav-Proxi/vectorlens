@@ -8,11 +8,10 @@ from typing import Any
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from vectorlens.session_bus import bus
 from vectorlens.server.api import router as api_router
@@ -31,40 +30,73 @@ _ALLOWED_ORIGINS = {
 }
 
 
-class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Reject requests with bodies larger than MAX_REQUEST_BODY.
+class RequestSizeLimitMiddleware:
+    """Pure ASGI middleware that enforces MAX_REQUEST_BODY by wrapping receive().
 
-    Reads the actual stream rather than trusting Content-Length, which is
-    omitted for Transfer-Encoding: chunked requests — the previous
-    content-length-only check could be bypassed to stream unbounded payloads.
+    BaseHTTPMiddleware's approach of hacking _stream doesn't work in modern
+    Starlette — downstream routes use ASGI's receive(), not _stream. This
+    middleware intercepts at the ASGI layer instead, buffering the body and
+    re-serving it via a replacement receive callable.
+
+    Handles both Content-Length and Transfer-Encoding: chunked correctly.
     """
-    async def dispatch(self, request: Request, call_next):
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "")
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        content_length = headers.get(b"content-length")
+
         # Fast path: honour Content-Length when present
-        content_length = request.headers.get("content-length")
         if content_length:
             if int(content_length) > MAX_REQUEST_BODY:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": "Request body too large"},
-                )
-            return await call_next(request)
+                await _send_413(send)
+                return
+            await self.app(scope, receive, send)
+            return
 
-        # Chunked / unknown length: read up to limit + 1 byte to detect oversize
-        if request.method in ("POST", "PUT", "PATCH"):
-            body = b""
-            async for chunk in request.stream():
-                body += chunk
-                if len(body) > MAX_REQUEST_BODY:
-                    return JSONResponse(
-                        status_code=413,
-                        content={"detail": "Request body too large"},
-                    )
-            # Re-inject the fully-read body so downstream can read it
-            async def _body_stream():
-                yield body
-            request._stream = _body_stream()  # type: ignore[attr-defined]
+        # Only buffer mutation methods with unknown body length
+        if method not in ("POST", "PUT", "PATCH"):
+            await self.app(scope, receive, send)
+            return
 
-        return await call_next(request)
+        # Chunked / unknown: buffer body and check size
+        body = b""
+        more = True
+        while more:
+            message = await receive()
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+            if len(body) > MAX_REQUEST_BODY:
+                await _send_413(send)
+                return
+
+        # Replace receive with a callable that replays the buffered body
+        async def buffered_receive() -> dict:
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, buffered_receive, send)
+
+
+async def _send_413(send: Any) -> None:
+    """Send a 413 Request Entity Too Large response at the ASGI level."""
+    import json
+    body = json.dumps({"detail": "Request body too large"}).encode()
+    await send({
+        "type": "http.response.start",
+        "status": 413,
+        "headers": [
+            [b"content-type", b"application/json"],
+            [b"content-length", str(len(body)).encode()],
+        ],
+    })
+    await send({"type": "http.response.body", "body": body})
 
 
 @asynccontextmanager
