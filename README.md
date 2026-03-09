@@ -8,8 +8,9 @@
 
 When your RAG pipeline hallucinates, you're left guessing. Which chunk caused it? Did the retriever fail? Did the LLM ignore the context? VectorLens answers these questions in real-time with a local dashboard — no signup, no data leaving your machine.
 
-<!-- Dashboard screenshot: dark theme showing LLM output with hallucinated sentences highlighted in red,
-     below: retrieved chunks panel with attribution scores, groundedness meter at top (72% green). -->
+![VectorLens demo](docs/demo.gif)
+
+![VectorLens dashboard — hallucinated sentence highlighted in red, retrieved chunks with attribution scores](docs/dashboard-screenshot.png)
 
 ## The Problem
 
