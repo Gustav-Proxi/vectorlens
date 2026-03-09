@@ -1,55 +1,42 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
-
-permissions:
-  contents: read
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build:
-    name: Build package
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install build dependencies
-        run: pip install build hatchling
+      - name: Install hatch
+        run: pip install hatch
 
-      - name: Build dashboard
-        run: |
-          cd dashboard
-          npm install --frozen-lockfile
-          npm run build
+      - name: Build package
+        run: hatch build
 
-      - name: Build Python package
-        run: python -m build
-
-      - name: Upload artifacts
+      - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
   publish:
-    name: Publish to PyPI
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write
+      id-token: write  # required for trusted publishing
 
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
