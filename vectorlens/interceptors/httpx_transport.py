@@ -11,7 +11,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterator, AsyncIterator
 
 from vectorlens.interceptors.base import BaseInterceptor
 from vectorlens.session_bus import bus
@@ -239,6 +239,165 @@ def _calculate_cost(provider: str, model: str, prompt_tokens: int, completion_to
     return (prompt_tokens + completion_tokens) * 0.01 / 1000
 
 
+class _StreamingResponseWrapper:
+    """Wraps an httpx.Response to capture streaming SSE chunks transparently.
+
+    Intercepts chunks as they flow through iter_lines/aiter_lines/iter_bytes/aiter_bytes,
+    reconstructs the full text from SSE events, and records via the event bus after
+    streaming completes.
+    """
+
+    def __init__(
+        self,
+        response: Any,
+        request_event: LLMRequestEvent,
+        provider: str,
+        start_time: float,
+    ) -> None:
+        self._response = response
+        self._request_event = request_event
+        self._provider = provider
+        self._start_time = start_time
+        self._chunks: list[str] = []
+        self._finalized = False
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward all unknown attributes to wrapped response."""
+        return getattr(self._response, name)
+
+    def iter_lines(self) -> Iterator[str]:
+        """Sync line iterator — intercepts SSE lines."""
+        try:
+            for line in self._response.iter_lines():
+                self._process_sse_line(line)
+                yield line
+        finally:
+            self._finalize()
+
+    async def aiter_lines(self) -> AsyncIterator[str]:
+        """Async line iterator — intercepts SSE lines."""
+        try:
+            async for line in self._response.aiter_lines():
+                self._process_sse_line(line)
+                yield line
+        finally:
+            self._finalize()
+
+    def iter_bytes(self) -> Iterator[bytes]:
+        """Sync bytes iterator — passes through unchanged."""
+        try:
+            for chunk in self._response.iter_bytes():
+                yield chunk
+        finally:
+            self._finalize()
+
+    async def aiter_bytes(self) -> AsyncIterator[bytes]:
+        """Async bytes iterator — passes through unchanged."""
+        try:
+            async for chunk in self._response.aiter_bytes():
+                yield chunk
+        finally:
+            self._finalize()
+
+    def _process_sse_line(self, line: str) -> None:
+        """Parse SSE data line and extract text delta.
+
+        Args:
+            line: A single line from the SSE stream (e.g., "data: {...}")
+        """
+        if not line.startswith("data: "):
+            return
+
+        data = line[6:].strip()
+
+        # OpenAI/Anthropic send "[DONE]" as final marker
+        if data == "[DONE]":
+            return
+
+        try:
+            parsed = json.loads(data)
+            delta = self._extract_delta(parsed)
+            if delta:
+                self._chunks.append(delta)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            # Silently skip malformed lines
+            pass
+
+    def _extract_delta(self, parsed: dict[str, Any]) -> str:
+        """Extract text delta from SSE chunk for different providers.
+
+        Args:
+            parsed: Parsed JSON object from SSE data line
+
+        Returns:
+            Text delta (content added by this chunk), or empty string if none
+        """
+        if self._provider == "openai":
+            # OpenAI: {"choices": [{"delta": {"content": "..."}}]}
+            choices = parsed.get("choices", [])
+            if choices and isinstance(choices, list) and len(choices) > 0:
+                delta_obj = choices[0].get("delta", {})
+                if isinstance(delta_obj, dict):
+                    return delta_obj.get("content", "") or ""
+
+        elif self._provider == "anthropic":
+            # Anthropic: {"type": "content_block_delta", "delta": {"text": "..."}}
+            if parsed.get("type") == "content_block_delta":
+                delta_obj = parsed.get("delta", {})
+                if isinstance(delta_obj, dict):
+                    return delta_obj.get("text", "") or ""
+
+        elif self._provider == "gemini":
+            # Gemini: {"candidates": [{"content": {"parts": [{"text": "..."}]}}]}
+            candidates = parsed.get("candidates", [])
+            if candidates and isinstance(candidates, list) and len(candidates) > 0:
+                content = candidates[0].get("content", {})
+                if isinstance(content, dict):
+                    parts = content.get("parts", [])
+                    if parts and isinstance(parts, list) and len(parts) > 0:
+                        return parts[0].get("text", "") or ""
+
+        elif self._provider == "mistral":
+            # Mistral: {"choices": [{"delta": {"content": "..."}}]} (same as OpenAI)
+            choices = parsed.get("choices", [])
+            if choices and isinstance(choices, list) and len(choices) > 0:
+                delta_obj = choices[0].get("delta", {})
+                if isinstance(delta_obj, dict):
+                    return delta_obj.get("content", "") or ""
+
+        return ""
+
+    def _finalize(self) -> None:
+        """Record the complete streaming response after all chunks consumed.
+
+        Called after iteration completes (sync or async). Idempotent via _finalized flag.
+        """
+        if self._finalized:
+            return
+
+        self._finalized = True
+        full_text = "".join(self._chunks)
+
+        if not full_text:
+            return
+
+        latency_ms = (time.time() - self._start_time) * 1000
+
+        resp_event = LLMResponseEvent(
+            request_id=self._request_event.id,
+            output_text=full_text,
+            latency_ms=latency_ms,
+            prompt_tokens=0,  # Streaming often doesn't provide token counts mid-stream
+            completion_tokens=len(full_text.split()),  # Rough token estimate
+            cost_usd=0.0,  # Can't compute without accurate completion_tokens
+        )
+
+        try:
+            bus.record_llm_response(resp_event)
+        except Exception:
+            _logger.debug("httpx: failed to record streaming LLM response", exc_info=True)
+
+
 def _make_async_wrapper(original: Callable[..., Any]) -> Callable[..., Any]:
     """Create async wrapper for httpx.AsyncClient.send.
 
@@ -272,12 +431,16 @@ def _make_async_wrapper(original: Callable[..., Any]) -> Callable[..., Any]:
         # Parse and record response
         if request_event:
             try:
-                # Only process non-streaming responses
                 content_type = response.headers.get("content-type", "")
-                if "text/event-stream" not in content_type:
-                    body = json.loads(response.content)
-                    resp_event = _parse_response(body, provider, request_event, latency_ms)
-                    bus.record_llm_response(resp_event)
+
+                # Handle streaming responses
+                if "text/event-stream" in content_type:
+                    return _StreamingResponseWrapper(response, request_event, provider, start)
+
+                # Handle non-streaming responses
+                body = json.loads(response.content)
+                resp_event = _parse_response(body, provider, request_event, latency_ms)
+                bus.record_llm_response(resp_event)
             except Exception:
                 _logger.debug("httpx: failed to record LLM response", exc_info=True)
 
@@ -389,12 +552,16 @@ def _make_sync_wrapper(original: Callable[..., Any]) -> Callable[..., Any]:
         # Parse and record response
         if request_event:
             try:
-                # Only process non-streaming responses
                 content_type = response.headers.get("content-type", "")
-                if "text/event-stream" not in content_type:
-                    body = json.loads(response.content)
-                    resp_event = _parse_response(body, provider, request_event, latency_ms)
-                    bus.record_llm_response(resp_event)
+
+                # Handle streaming responses
+                if "text/event-stream" in content_type:
+                    return _StreamingResponseWrapper(response, request_event, provider, start)
+
+                # Handle non-streaming responses
+                body = json.loads(response.content)
+                resp_event = _parse_response(body, provider, request_event, latency_ms)
+                bus.record_llm_response(resp_event)
             except Exception:
                 _logger.debug("httpx: failed to record sync LLM response", exc_info=True)
 

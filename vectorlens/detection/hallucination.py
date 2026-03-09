@@ -22,7 +22,29 @@ def _get_model() -> SentenceTransformer:
     """Lazy-load sentence-transformers model as singleton."""
     global _model
     if _model is None:
+        import sys
+        from pathlib import Path
+
+        # Check if model is already cached
+        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        model_cached = any(
+            (cache_dir / d).exists()
+            for d in [model_name.replace("/", "--"), f"models--{model_name.replace('/', '--')}"]
+        )
+
+        if not model_cached:
+            print(
+                "\033[33m[VectorLens] Downloading all-MiniLM-L6-v2 (~90MB) for "
+                "hallucination detection — one-time download...\033[0m",
+                file=sys.stderr,
+            )
+
         _model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        if not model_cached:
+            print("\033[32m[VectorLens] Model ready.\033[0m", file=sys.stderr)
+
     return _model
 
 

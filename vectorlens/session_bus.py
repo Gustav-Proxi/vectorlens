@@ -95,6 +95,15 @@ class SessionBus:
             self._evict_if_needed()
             return session
 
+    def start_conversation(self) -> str:
+        """Start a new conversation. Returns conversation_id.
+
+        All sessions created within this conversation share the same
+        conversation_id, enabling parent-child trace linking in the dashboard.
+        """
+        session = self.new_session()
+        return session.conversation_id
+
     def get_session(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 

@@ -27,7 +27,29 @@ def _get_model() -> SentenceTransformer:
     """Lazy-load sentence-transformers model as singleton."""
     global _model
     if _model is None:
+        import sys
+        from pathlib import Path
+
+        # Check if model is already cached
+        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+        model_cached = any(
+            (cache_dir / d).exists()
+            for d in [model_name.replace("/", "--"), f"models--{model_name.replace('/', '--')}"]
+        )
+
+        if not model_cached:
+            print(
+                "\033[33m[VectorLens] Downloading all-MiniLM-L6-v2 (~90MB) for "
+                "attribution scoring — one-time download...\033[0m",
+                file=sys.stderr,
+            )
+
         _model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        if not model_cached:
+            print("\033[32m[VectorLens] Model ready.\033[0m", file=sys.stderr)
+
     return _model
 
 
@@ -44,23 +66,50 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 def _remove_chunk_from_messages(
     messages: list[dict], chunk_text: str
 ) -> list[dict]:
-    """
-    Remove a chunk from the messages by finding and removing its text.
+    """Remove a chunk from messages using robust semantic matching.
+
+    Tries in order:
+    1. Exact substring match (fast path)
+    2. First-N-chars prefix match (handles truncated storage)
+    3. First-sentence match (handles metadata wrapping)
 
     Args:
         messages: List of message dicts with 'role' and 'content' keys
         chunk_text: Text of the chunk to remove
 
     Returns:
-        New messages list with chunk removed
+        New messages list with chunk removed (or unchanged if no match found)
     """
     new_messages = []
+    chunk_prefix = chunk_text[:120].strip()  # first ~120 chars for truncation
+    chunk_first_sentence = chunk_text.split(".")[0][:80].strip()  # first sentence
 
     for msg in messages:
         new_msg = msg.copy()
-        if "content" in new_msg and isinstance(new_msg["content"], str):
-            # Simple string replacement: remove the chunk text
-            new_msg["content"] = new_msg["content"].replace(chunk_text, "").strip()
+        content = new_msg.get("content")
+        if not isinstance(content, str):
+            new_messages.append(new_msg)
+            continue
+
+        # 1. Exact match (fast path)
+        if chunk_text in content:
+            new_msg["content"] = content.replace(chunk_text, "").strip()
+        # 2. Prefix match (handles truncated chunks)
+        elif len(chunk_prefix) > 30 and chunk_prefix in content:
+            idx = content.find(chunk_prefix)
+            # Remove from idx to next double-newline or end
+            end = content.find("\n\n", idx)
+            if end == -1:
+                end = len(content)
+            new_msg["content"] = (content[:idx] + content[end:]).strip()
+        # 3. First-sentence match (handles metadata wrapping)
+        elif len(chunk_first_sentence) > 20 and chunk_first_sentence in content:
+            idx = content.find(chunk_first_sentence)
+            end = content.find("\n\n", idx)
+            if end == -1:
+                end = len(content)
+            new_msg["content"] = (content[:idx] + content[end:]).strip()
+        # 4. No match — leave unchanged (safer than corrupting context)
 
         new_messages.append(new_msg)
 
@@ -71,7 +120,7 @@ def _remove_all_chunks_from_messages(
     messages: list[dict], chunks: list[RetrievedChunk]
 ) -> list[dict]:
     """
-    Remove all chunk texts from messages.
+    Remove all chunk texts from messages using robust matching.
 
     Args:
         messages: List of message dicts
@@ -82,8 +131,8 @@ def _remove_all_chunks_from_messages(
     """
     result = messages
     for chunk in chunks:
-        # Use first 50 chars to avoid removing too much
-        result = _remove_chunk_from_messages(result, chunk.text[:50])
+        # Use full chunk text with robust semantic matching
+        result = _remove_chunk_from_messages(result, chunk.text)
     return result
 
 

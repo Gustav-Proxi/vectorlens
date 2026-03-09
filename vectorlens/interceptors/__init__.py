@@ -14,6 +14,7 @@ from vectorlens.interceptors.chroma_patch import ChromaInterceptor
 from vectorlens.interceptors.faiss_patch import FAISSInterceptor
 from vectorlens.interceptors.gemini_patch import GeminiInterceptor
 from vectorlens.interceptors.httpx_transport import HttpxTransportInterceptor
+from vectorlens.interceptors.langchain_patch import LangChainInterceptor
 from vectorlens.interceptors.openai_patch import OpenAIInterceptor
 from vectorlens.interceptors.pinecone_patch import PineconeInterceptor
 from vectorlens.interceptors.transformers_patch import TransformersInterceptor
@@ -25,6 +26,7 @@ _INTERCEPTORS: dict[str, Any] = {
     "openai": OpenAIInterceptor(),
     "anthropic": AnthropicInterceptor(),
     "gemini": GeminiInterceptor(),
+    "langchain": LangChainInterceptor(),
     "chroma": ChromaInterceptor(),
     "pinecone": PineconeInterceptor(),
     "faiss": FAISSInterceptor(),

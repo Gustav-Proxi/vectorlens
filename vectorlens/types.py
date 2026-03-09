@@ -60,6 +60,9 @@ class LLMRequestEvent:
     max_tokens: int = 1024
     # Linked to vector query
     vector_query_id: str | None = None
+    # Multi-turn conversation linking
+    parent_request_id: str | None = None   # ID of the LLM call that triggered this one
+    chain_step: str = ""                    # e.g., "retrieval", "generation", "reflection"
 
 
 @dataclass
@@ -111,3 +114,4 @@ class Session:
     llm_requests: list[LLMRequestEvent] = field(default_factory=list)
     llm_responses: list[LLMResponseEvent] = field(default_factory=list)
     attributions: list[AttributionResult] = field(default_factory=list)
+    conversation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
