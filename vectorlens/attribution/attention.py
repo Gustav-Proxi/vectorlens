@@ -101,8 +101,9 @@ class AttentionAttributor:
                 # Mix with identity for smoothing
                 attn = 0.5 * attn + 0.5 * torch.eye(seq_len, device=device)
 
-                # Normalize rows
-                attn = attn / attn.sum(dim=-1, keepdim=True)
+                # Normalize rows — clamp denominator to avoid zero-division NaN
+                row_sums = attn.sum(dim=-1, keepdim=True).clamp(min=1e-9)
+                attn = attn / row_sums
 
                 # Update rollout
                 rollout = rollout @ attn

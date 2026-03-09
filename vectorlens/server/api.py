@@ -258,7 +258,9 @@ class StatusResponse(BaseModel):
 @router.get("/status", response_model=StatusResponse)
 async def get_status() -> StatusResponse:
     """Get server status, installed interceptors, and active session."""
-    active_session = getattr(bus, "_active_session_id", None)
+    # active_session is now per-context (ContextVar) — report most recently
+    # created session globally so the dashboard always shows the latest run
+    active_session = bus._session_order[-1] if bus._session_order else None
     installed = get_installed()
     return StatusResponse(
         status="ok",

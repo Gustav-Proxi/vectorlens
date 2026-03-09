@@ -181,7 +181,8 @@ class TestOpenAIInterceptor:
             wrapped = self.interceptor._wrap_acreate(mock_original_acreate)
             mock_self = MagicMock()
 
-            # Run async
+            # Run async — asyncio.run() creates a fresh context, so the
+            # wrapper will create its own session via get_or_create_session()
             import asyncio
             asyncio.run(
                 wrapped(
@@ -191,7 +192,11 @@ class TestOpenAIInterceptor:
                 )
             )
 
-            session = self.bus.get_or_create_session()
+            # Find whichever session received the events
+            session = next(
+                (s for s in self.bus.all_sessions() if s.llm_requests), None
+            )
+            assert session is not None
             assert len(session.llm_requests) == 1
             assert len(session.llm_responses) == 1
             assert session.llm_responses[0].output_text == "Async response"
@@ -290,7 +295,10 @@ class TestAnthropicInterceptor:
                 )
             )
 
-            session = self.bus.get_or_create_session()
+            session = next(
+                (s for s in self.bus.all_sessions() if s.llm_responses), None
+            )
+            assert session is not None
             assert session.llm_responses[0].output_text == "Async anthropic"
 
 

@@ -184,14 +184,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         _connected_websockets.add(websocket)
     try:
         while True:
-            # Keep connection alive, receive any client messages (echo them back or ignore)
             data = await websocket.receive_text()
-            # Optionally handle client commands here
             logger.debug(f"Received from client: {data}")
     except WebSocketDisconnect:
         logger.debug("Client disconnected from WebSocket")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        # Break the loop on any unexpected error — prevents infinite CPU spin
+        # in half-closed socket states that never raise WebSocketDisconnect.
+        logger.debug(f"WebSocket closed unexpectedly: {e}")
     finally:
         with _ws_lock:
             _connected_websockets.discard(websocket)

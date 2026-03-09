@@ -102,20 +102,23 @@ def test_sessions_list_after_creation(client, fresh_bus):
 
 def test_sessions_list_respects_counts(client, fresh_bus):
     """Test that session counts are accurate."""
-    # Create session
-    client.post("/api/sessions/new")
+    # Create session via API and get its ID
+    create_resp = client.post("/api/sessions/new")
+    session_id = create_resp.json()["id"]
 
-    # Add some events to active session (via bus)
-    session = bus.get_or_create_session()
+    # Look up that specific session by ID (avoids cross-context ambiguity)
+    session = bus.get_session(session_id)
+    assert session is not None
     session.vector_queries.append(VectorQueryEvent())
     session.vector_queries.append(VectorQueryEvent())
     session.llm_requests.append(LLMRequestEvent())
 
     response = client.get("/api/sessions")
     sessions = response.json()
-    assert sessions[0]["vector_queries_count"] == 2
-    assert sessions[0]["llm_requests_count"] == 1
-    assert sessions[0]["llm_responses_count"] == 0
+    target = next(s for s in sessions if s["id"] == session_id)
+    assert target["vector_queries_count"] == 2
+    assert target["llm_requests_count"] == 1
+    assert target["llm_responses_count"] == 0
 
 
 # ============================================================================
