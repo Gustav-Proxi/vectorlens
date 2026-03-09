@@ -13,6 +13,9 @@ from vectorlens.pipeline import _run_attribution
 
 def _make_session_with_attribution(bus, groundedness: float, hallucinated: bool = False):
     """Helper: create a session with a completed attribution result."""
+    import numpy as np
+    from unittest.mock import MagicMock
+
     session = bus.new_session()
     sid = session.id
 
@@ -27,7 +30,13 @@ def _make_session_with_attribution(bus, groundedness: float, hallucinated: bool 
     resp = LLMResponseEvent(output_text=output_text, request_id=req.id)
     bus.record_llm_response(resp)
 
-    _run_attribution(resp, _bus=bus)
+    from vectorlens.detection import hallucination as _hm
+
+    fake_model = MagicMock()
+    fake_model.encode.return_value = np.array([[1.0, 0.0, 0.0]])
+
+    with patch.object(_hm, "_get_model", return_value=fake_model):
+        _run_attribution(resp, _bus=bus)
     return session.id
 
 
