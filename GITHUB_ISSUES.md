@@ -1081,3 +1081,155 @@ This issue is to create a **`pytest-vectorlens` plugin** that:
 - For headless CI: disable browser auto-open, serve on localhost only
 
 ---
+
+---
+
+## Issue 25: LlamaIndex Interceptor
+
+**Labels:** `new-interceptor`, `enhancement`
+**Milestone:** v0.3.0
+
+### Description
+
+LlamaIndex is the second most popular RAG framework after LangChain, with a different architecture (QueryEngine, RetrieverQueryEngine, NodeWithScore). VectorLens currently has no visibility into LlamaIndex pipelines.
+
+**What to patch**:
+- `llama_index.core.query_engine.RetrieverQueryEngine.query()` and `aquery()`
+- `llama_index.core.base_retriever.BaseRetriever.retrieve()` and `aretrieve()`
+
+**Events to emit**:
+- `RetrieverEvent`: node IDs, similarity scores, text snippets
+- `LLMResponseEvent`: synthesized response, source attribution from `response.source_nodes`
+
+**Reference**: `vectorlens/interceptors/langchain_patch.py` for the pattern.
+
+### Acceptance Criteria
+- [ ] New file `vectorlens/interceptors/llamaindex_patch.py`
+- [ ] Patches both sync/async query and retrieve methods
+- [ ] Records chunk nodes from `response.source_nodes` (text + score)
+- [ ] Silently skips if `llama_index` not installed
+- [ ] Unit tests in `tests/test_interceptors/test_llamaindex_patch.py`
+
+---
+
+## Issue 26: DSPy Interceptor
+
+**Labels:** `new-interceptor`, `enhancement`
+**Milestone:** v0.3.0
+
+### Description
+
+DSPy is a framework for algorithmically optimizing LLM prompts. Its modules (Predict, ChainOfThought, RAGalong) compile down to optimized prompts that change at runtime. VectorLens currently cannot track which compiled prompt generated which output.
+
+**What to patch**:
+- `dspy.Predict.__call__()` and `dspy.ChainOfThought.__call__()`
+- Capture `dspy.settings.lm` calls to trace which LM backend is used
+
+### Acceptance Criteria
+- [ ] New file `vectorlens/interceptors/dspy_patch.py`
+- [ ] Captures module name, compiled prompt, and LLM output
+- [ ] Records `LLMRequestEvent` with module metadata as extra fields
+- [ ] Silently skips if DSPy not installed
+- [ ] Unit tests with mocked DSPy modules
+
+---
+
+## Issue 27: Qdrant Vector DB Interceptor
+
+**Labels:** `new-interceptor`, `enhancement`
+**Milestone:** v0.2.0
+
+### Description
+
+Qdrant is a popular open-source vector database commonly used in production RAG. VectorLens currently supports Chroma, FAISS, Pinecone, pgvector, and Weaviate — but not Qdrant.
+
+**What to patch**:
+- `qdrant_client.QdrantClient.search()` and `async_client.AsyncQdrantClient.search()`
+- `QdrantClient.query_points()` (new unified API)
+
+**Reference**: `vectorlens/interceptors/pinecone_patch.py` for pattern.
+
+### Acceptance Criteria
+- [ ] New file `vectorlens/interceptors/qdrant_patch.py`
+- [ ] Patches sync and async search methods
+- [ ] Records `RetrieverEvent` with collection name, query vector hash, and result chunks
+- [ ] Silently skips if `qdrant_client` not installed
+- [ ] Unit tests in `tests/test_interceptors/test_qdrant_patch.py`
+
+---
+
+## Issue 28: Dashboard Export to HTML Report
+
+**Labels:** `enhancement`, `ux`
+**Milestone:** v0.2.0
+
+### Description
+
+Currently, VectorLens sessions are ephemeral — they exist in RAM while the dev server runs and disappear on exit (until SQLite persistence in Issue 8 is completed). Even with persistence, sharing debugging findings requires the recipient to also have VectorLens running.
+
+Add `vectorlens.export(session_id, path="report.html")` to generate a **self-contained HTML report** with no external dependencies:
+- Embedded CSS (same glassmorphism dashboard style)
+- Embedded session data as JSON
+- Embedded JS for interactive chunk attribution explorer
+- No server required to view
+
+This enables: sharing a hallucination report with a colleague, attaching to a GitHub issue, or archiving a debugging session.
+
+### Acceptance Criteria
+- [ ] New function `vectorlens.export(session_id: str, path: str = "vectorlens_report.html") -> Path`
+- [ ] Report contains all session events, attribution scores, and hallucination highlights
+- [ ] Report is interactive (click chunk to see attribution) with no internet required
+- [ ] File size < 500KB for typical sessions
+- [ ] New API endpoint `GET /api/sessions/{session_id}/export` (triggers download)
+- [ ] Export button in dashboard UI (top-right, next to "Clear Sessions")
+- [ ] Unit tests for export serialization
+
+---
+
+## Issue 29: Multi-Turn Conversation Diff View
+
+**Labels:** `enhancement`, `ux`, `dashboard`
+**Milestone:** v0.3.0
+
+### Description
+
+VectorLens traces individual LLM calls, but multi-turn conversations are common in RAG chatbots. When debugging a conversation where hallucinations appear in turn 3 but not turn 1, it's hard to see what changed between turns.
+
+Add a **Conversation Diff** view to the dashboard:
+- Side-by-side comparison of two turns
+- Highlight which chunks were **added** (green), **removed** (red), or **unchanged** (gray) between turns
+- Show how groundedness score changed turn-over-turn
+- Show which retrieved chunks shifted between turns
+
+### Acceptance Criteria
+- [ ] New dashboard tab: "Conversation Diff"
+- [ ] Turn selector: dropdown to select two turns from the same conversation session
+- [ ] Chunk diff panel: shows added/removed/unchanged chunks
+- [ ] Groundedness delta indicator: `↑ +12%` or `↓ -8%` with color coding
+- [ ] Backend: new API endpoint `GET /api/sessions/{id}/diff?turn_a=0&turn_b=2`
+- [ ] Unit tests for diff computation logic
+
+---
+
+## Issue 30: Ollama / Local LLM Interceptor
+
+**Labels:** `new-interceptor`, `enhancement`
+**Milestone:** v0.2.0
+
+### Description
+
+Many developers run local models via Ollama (`ollama run llama3`, `ollama run mistral`). Ollama exposes an OpenAI-compatible API at `http://localhost:11434/v1`. VectorLens's `openai_patch.py` intercepts the OpenAI SDK — but Ollama users typically call the Ollama Python client directly (`from ollama import chat`), which bypasses the OpenAI SDK entirely.
+
+Add an Ollama-specific interceptor that patches `ollama.chat()` and `ollama.AsyncClient.chat()`.
+
+**Reference**: `vectorlens/interceptors/openai_patch.py` for the response extraction pattern.
+
+### Acceptance Criteria
+- [ ] New file `vectorlens/interceptors/ollama_patch.py`
+- [ ] Patches `ollama.chat()` and `ollama.AsyncClient.chat()`
+- [ ] Records `LLMRequestEvent` with model name and messages
+- [ ] Records `LLMResponseEvent` with response text and token counts (from `response.usage`)
+- [ ] Silently skips if `ollama` not installed
+- [ ] Unit tests in `tests/test_interceptors/test_ollama_patch.py`
+- [ ] README: add Ollama to "Supported Backends" table
+
