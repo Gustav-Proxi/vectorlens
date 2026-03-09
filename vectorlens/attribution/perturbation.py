@@ -1,11 +1,13 @@
 """Perturbation-based attribution for VectorLens.
 
 Measures which retrieved chunks caused which parts of the output by dropping
-each chunk and measuring output divergence.
+each chunk and measuring output divergence. Also supports LIME-style bounded
+perturbation for fixed-cost attribution.
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Callable, Optional
 
@@ -13,6 +15,8 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from vectorlens.types import OutputToken, RetrievedChunk
+
+logger = logging.getLogger(__name__)
 
 
 # Lazy-loaded model singleton
@@ -61,6 +65,48 @@ def _remove_chunk_from_messages(
         new_messages.append(new_msg)
 
     return new_messages
+
+
+def _remove_all_chunks_from_messages(
+    messages: list[dict], chunks: list[RetrievedChunk]
+) -> list[dict]:
+    """
+    Remove all chunk texts from messages.
+
+    Args:
+        messages: List of message dicts
+        chunks: List of chunks to remove
+
+    Returns:
+        New messages list with all chunks removed
+    """
+    result = messages
+    for chunk in chunks:
+        # Use first 50 chars to avoid removing too much
+        result = _remove_chunk_from_messages(result, chunk.text[:50])
+    return result
+
+
+def _inject_chunk_text(messages: list[dict], text: str) -> list[dict]:
+    """
+    Append chunk text to the last user message.
+
+    Args:
+        messages: List of message dicts
+        text: Text to inject
+
+    Returns:
+        New messages list with text appended to last user message
+    """
+    result = [m.copy() for m in messages]
+    for msg in reversed(result):
+        if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+            msg["content"] = msg["content"] + "\n" + text
+            break
+    return result
+
+
+N_LIME_SAMPLES = 7  # Fixed cost regardless of chunk count
 
 
 class PerturbationAttributor:
@@ -129,6 +175,104 @@ class PerturbationAttributor:
                 chunk.attribution_score = 0.0
             else:
                 chunk.attribution_score = result
+
+        return chunks
+
+    async def compute_lime(
+        self,
+        original_messages: list[dict],
+        chunks: list[RetrievedChunk],
+        original_output: str,
+        n_samples: int = N_LIME_SAMPLES,
+    ) -> list[RetrievedChunk]:
+        """
+        LIME-style attribution: fixed K LLM calls regardless of chunk count.
+
+        Algorithm:
+        1. Generate n_samples random binary masks over chunks (1=include, 0=drop)
+        2. For each mask: build messages with only masked-in chunks, call LLM
+        3. Measure semantic similarity between each masked output and original
+        4. Fit ridge regression: mask_vectors → similarity_scores
+        5. Regression coefficients ≈ per-chunk importance weights
+        6. Normalize to [0, 1] and assign as attribution_score
+
+        Cost: exactly n_samples LLM calls, not len(chunks) calls.
+
+        Args:
+            original_messages: Original messages passed to LLM
+            chunks: List of retrieved chunks
+            original_output: Original LLM output text
+            n_samples: Number of LIME samples (default 7)
+
+        Returns:
+            Chunks with attribution_score set
+        """
+        if not chunks or not original_output:
+            return chunks
+
+        n = len(chunks)
+        if n == 0:
+            return chunks
+
+        # Embed original output once
+        model = _get_model()
+        original_emb = model.encode(original_output, convert_to_numpy=True)
+
+        # Generate random masks (n_samples × n_chunks binary matrix)
+        # Ensure each chunk appears in at least some masks
+        rng = np.random.default_rng(seed=42)
+        masks = rng.integers(0, 2, size=(n_samples, n))  # shape: (K, N)
+
+        # Guarantee no all-zero mask (would drop all context)
+        for i in range(n_samples):
+            if masks[i].sum() == 0:
+                masks[i, rng.integers(0, n)] = 1
+
+        # Run LLM for each mask concurrently
+        async def _run_masked(mask: np.ndarray) -> float:
+            # Build messages with only masked-in chunks
+            included = [chunks[j] for j in range(n) if mask[j] == 1]
+            if not included:
+                return 0.0
+            masked_msgs = _remove_all_chunks_from_messages(original_messages, chunks)
+            # Re-inject only the included chunks
+            for chunk in included:
+                masked_msgs = _inject_chunk_text(masked_msgs, chunk.text)
+
+            try:
+                masked_output = await self.llm_caller(masked_msgs)
+                if not masked_output:
+                    return 0.0
+                masked_emb = model.encode(masked_output, convert_to_numpy=True)
+                return float(_cosine_similarity(original_emb, masked_emb))
+            except Exception:
+                return 0.0
+
+        similarities = await asyncio.gather(
+            *[_run_masked(masks[i]) for i in range(n_samples)]
+        )
+        similarities = np.array(similarities)  # shape: (K,)
+
+        # Ridge regression: masks (K×N) → similarities (K,)
+        # coefficients (N,) = per-chunk attribution
+        X = masks.astype(float)
+        # Add small L2 regularization
+        XtX = X.T @ X + 0.1 * np.eye(n)
+        Xty = X.T @ similarities
+        coefs = np.linalg.solve(XtX, Xty)  # shape: (N,)
+
+        # Normalize to [0, 1]
+        coefs = np.clip(coefs, 0, None)  # attribution can't be negative
+        if coefs.max() > 0:
+            coefs = coefs / coefs.max()
+
+        for i, chunk in enumerate(chunks):
+            chunk.attribution_score = float(coefs[i])
+
+        logger.debug(
+            f"LIME attribution: {n_samples} samples for {n} chunks, "
+            f"mean similarity={similarities.mean():.3f}"
+        )
 
         return chunks
 

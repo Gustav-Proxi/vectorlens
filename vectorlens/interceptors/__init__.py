@@ -13,6 +13,7 @@ from vectorlens.interceptors.anthropic_patch import AnthropicInterceptor
 from vectorlens.interceptors.chroma_patch import ChromaInterceptor
 from vectorlens.interceptors.faiss_patch import FAISSInterceptor
 from vectorlens.interceptors.gemini_patch import GeminiInterceptor
+from vectorlens.interceptors.httpx_transport import HttpxTransportInterceptor
 from vectorlens.interceptors.openai_patch import OpenAIInterceptor
 from vectorlens.interceptors.pinecone_patch import PineconeInterceptor
 from vectorlens.interceptors.transformers_patch import TransformersInterceptor
@@ -20,6 +21,7 @@ from vectorlens.interceptors.weaviate_patch import WeaviateInterceptor
 
 # Global registry of all available interceptors
 _INTERCEPTORS: dict[str, Any] = {
+    "httpx": HttpxTransportInterceptor(),
     "openai": OpenAIInterceptor(),
     "anthropic": AnthropicInterceptor(),
     "gemini": GeminiInterceptor(),

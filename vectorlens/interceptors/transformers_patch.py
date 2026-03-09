@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import functools
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Tuple, Optional
 
 from vectorlens.interceptors.base import BaseInterceptor
 from vectorlens.session_bus import bus
 from vectorlens.types import LLMRequestEvent, LLMResponseEvent
+
+# Module-level storage for last intercepted model and tokenizer
+# Used by attention attribution to avoid re-loading
+_intercepted_model: Optional[Tuple[Any, Any]] = None
 
 
 class TransformersInterceptor(BaseInterceptor):
@@ -109,6 +113,11 @@ class TransformersInterceptor(BaseInterceptor):
                     or ""
                 )
 
+            # Store model and tokenizer for attention attribution
+            global _intercepted_model
+            if hasattr(self_, "model") and hasattr(self_, "tokenizer"):
+                _intercepted_model = (self_.model, self_.tokenizer)
+
             # Create request event
             request_event = LLMRequestEvent(
                 provider="transformers",
@@ -177,6 +186,11 @@ class TransformersInterceptor(BaseInterceptor):
                     or self_.config.model_type
                     or ""
                 )
+
+            # Store model and tokenizer for attention attribution
+            global _intercepted_model
+            if hasattr(self_, "tokenizer"):
+                _intercepted_model = (self_, self_.tokenizer)
 
             # Create request event
             request_event = LLMRequestEvent(

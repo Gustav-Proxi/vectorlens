@@ -3,12 +3,15 @@
 Subscribes to llm_response events on the bus and automatically runs
 hallucination detection + chunk attribution, storing results back to the bus.
 Uses a bounded ThreadPoolExecutor — prevents thread explosion under load.
+Conditionally triggers deep attribution only when hallucinations are detected.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Optional, Tuple
 
 from vectorlens.types import AttributionResult, LLMResponseEvent, RetrievedChunk
 
@@ -36,6 +39,30 @@ def setup_auto_attribution() -> None:
 def _on_llm_response(event: LLMResponseEvent) -> None:
     """Triggered after every LLM response — submits to bounded pool."""
     _executor.submit(_run_attribution, event)
+
+
+def _try_get_hf_model_and_tokenizer(
+    session: Any, response_event: LLMResponseEvent
+) -> Tuple[Optional[Any], Optional[Any]]:
+    """Try to retrieve the HF model + tokenizer used for this response.
+
+    Returns (model, tokenizer) if available, else (None, None).
+
+    Args:
+        session: VectorLens session
+        response_event: The LLM response event
+
+    Returns:
+        Tuple of (model, tokenizer) or (None, None)
+    """
+    try:
+        import vectorlens.interceptors.transformers_patch as transformers_patch
+
+        if transformers_patch._intercepted_model is not None:
+            return transformers_patch._intercepted_model
+    except (ImportError, AttributeError):
+        pass
+    return None, None
 
 
 def _run_attribution(response_event: LLMResponseEvent) -> None:
@@ -76,8 +103,10 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
         if output_tokens:
             grounded = sum(1 for t in output_tokens if not t.is_hallucinated)
             overall_groundedness = grounded / len(output_tokens)
+            hallucinated_count = len(output_tokens) - grounded
         else:
             overall_groundedness = 1.0
+            hallucinated_count = 0
 
         hallucinated_spans: list[tuple[int, int]] = []
         i = 0
@@ -90,6 +119,7 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
             else:
                 i += 1
 
+        # Fallback: use existing token-level attribution scores
         chunk_scores: dict[str, float] = {}
         for token in output_tokens:
             for chunk_id, score in token.chunk_attributions.items():
@@ -100,6 +130,48 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
                 chunk.attribution_score = chunk_scores[chunk.chunk_id]
             if overall_groundedness < 0.5 and chunk.attribution_score < 0.1:
                 chunk.caused_hallucination = True
+
+        # CONDITIONAL: skip deep attribution if fully grounded
+        if hallucinated_count == 0:
+            logger.debug("No hallucinations detected — skipping deep chunk attribution")
+            result = AttributionResult(
+                session_id=response_event.session_id,
+                request_id=response_event.request_id,
+                response_id=response_event.id,
+                chunks=chunks,
+                output_tokens=output_tokens,
+                overall_groundedness=overall_groundedness,
+                hallucinated_spans=hallucinated_spans,
+            )
+            bus.record_attribution(result)
+            return
+
+        # Deep attribution: try attention for local HF models first
+        hf_model, hf_tokenizer = _try_get_hf_model_and_tokenizer(session, response_event)
+        if hf_model is not None and hf_tokenizer is not None:
+            try:
+                from vectorlens.attribution.attention import AttentionAttributor
+
+                attributor = AttentionAttributor()
+                # Reconstruct input text from messages
+                input_text = " ".join(
+                    m.get("content", "")
+                    for m in (
+                        session.llm_requests[-1].messages
+                        if session.llm_requests
+                        else []
+                    )
+                    if isinstance(m.get("content"), str)
+                )
+                if input_text:
+                    chunks = attributor.compute(
+                        hf_model, hf_tokenizer, input_text, output_text, chunks
+                    )
+                    logger.debug("Used attention rollout attribution (HF model)")
+            except Exception as e:
+                logger.debug(
+                    f"Attention attribution failed, skipping: {e}", exc_info=False
+                )
 
         result = AttributionResult(
             session_id=response_event.session_id,
