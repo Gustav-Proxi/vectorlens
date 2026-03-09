@@ -20,6 +20,8 @@
 
 **The Solution**: Three lines of code. Local dashboard. Instant attribution.
 
+To see the long-term architectural goals and future features for this project, read our [`VISION.md`](./VISION.md). To see the latest security and stability roadmap, check our [`GITHUB_ISSUES.md`](./GITHUB_ISSUES.md).
+
 ```python
 import vectorlens
 vectorlens.serve()  # Open http://127.0.0.1:7756

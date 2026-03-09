@@ -113,10 +113,15 @@ class TransformersInterceptor(BaseInterceptor):
                     or ""
                 )
 
-            # Store model and tokenizer for attention attribution
-            global _intercepted_model
+            # Store model per-session (not global) to avoid cross-session bleed
+            # in concurrent servers where multiple threads use different models.
             if hasattr(self_, "model") and hasattr(self_, "tokenizer"):
-                _intercepted_model = (self_.model, self_.tokenizer)
+                try:
+                    session = bus.get_or_create_session()
+                    session.hf_model = self_.model
+                    session.hf_tokenizer = self_.tokenizer
+                except Exception:
+                    pass
 
             # Create request event
             request_event = LLMRequestEvent(
@@ -187,10 +192,14 @@ class TransformersInterceptor(BaseInterceptor):
                     or ""
                 )
 
-            # Store model and tokenizer for attention attribution
-            global _intercepted_model
+            # Store model per-session (not global)
             if hasattr(self_, "tokenizer"):
-                _intercepted_model = (self_, self_.tokenizer)
+                try:
+                    session = bus.get_or_create_session()
+                    session.hf_model = self_
+                    session.hf_tokenizer = self_.tokenizer
+                except Exception:
+                    pass
 
             # Create request event
             request_event = LLMRequestEvent(

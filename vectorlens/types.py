@@ -64,6 +64,13 @@ class LLMRequestEvent:
     parent_request_id: str | None = None   # ID of the LLM call that triggered this one
     chain_step: str = ""                    # e.g., "retrieval", "generation", "reflection"
 
+    def __post_init__(self) -> None:
+        # Prevent memory DoS via unbounded string fields from interceptors
+        if self.parent_request_id and len(self.parent_request_id) > 1000:
+            self.parent_request_id = self.parent_request_id[:1000]
+        if len(self.chain_step) > 256:
+            self.chain_step = self.chain_step[:256]
+
 
 @dataclass
 class LLMResponseEvent:
@@ -115,3 +122,8 @@ class Session:
     llm_responses: list[LLMResponseEvent] = field(default_factory=list)
     attributions: list[AttributionResult] = field(default_factory=list)
     conversation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # Per-session HF model reference — set by TransformersInterceptor so
+    # attention attribution uses the correct model in concurrent servers
+    # (avoids the global _intercepted_model bleed-across-sessions bug)
+    hf_model: Any | None = field(default=None, repr=False, compare=False)
+    hf_tokenizer: Any | None = field(default=None, repr=False, compare=False)

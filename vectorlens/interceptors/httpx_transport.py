@@ -362,6 +362,12 @@ class _StreamingResponseWrapper:
         if data == "[DONE]":
             return
 
+        # Guard: skip oversized chunks to prevent OOM from malicious endpoints.
+        # Legitimate SSE delta payloads are tiny (<1KB); 1MB is very generous.
+        if len(data) > 1_000_000:
+            _logger.debug("SSE chunk exceeds 1MB, skipping")
+            return
+
         try:
             parsed = json.loads(data)
             delta = self._extract_delta(parsed)

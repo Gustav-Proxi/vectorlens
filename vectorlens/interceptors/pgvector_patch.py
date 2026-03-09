@@ -186,8 +186,6 @@ class _BufferedResult:
             def fetchall(self) -> list[dict[str, Any]]:
                 result = []
                 for r in self._rows:
-                    if r is None:
-                        continue
                     if hasattr(r, "_asdict"):
                         result.append(r._asdict())
                     else:
@@ -221,6 +219,13 @@ def _make_async_wrapper(original_execute: Callable) -> Callable:
         try:
             sql_str = _get_sql_string(statement)
             if not _is_vector_query(sql_str):
+                return result
+
+            # Guard: DML statements (INSERT/UPDATE/DELETE) don't return rows.
+            # SQLAlchemy sets returns_rows=False on cursor results for DML.
+            if not getattr(result, "returns_rows", True):
+                return result
+            if not hasattr(result, "fetchall"):
                 return result
 
             # Buffer all rows
@@ -257,6 +262,13 @@ def _make_sync_wrapper(original_execute: Callable) -> Callable:
         try:
             sql_str = _get_sql_string(statement)
             if not _is_vector_query(sql_str):
+                return result
+
+            # Guard: DML statements (INSERT/UPDATE/DELETE) don't return rows.
+            # SQLAlchemy sets returns_rows=False on cursor results for DML.
+            if not getattr(result, "returns_rows", True):
+                return result
+            if not hasattr(result, "fetchall"):
                 return result
 
             # Buffer all rows

@@ -206,7 +206,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     to prevent Cross-Site WebSocket Hijacking (CSWSH).
     """
     origin = websocket.headers.get("origin", "")
-    if origin and origin not in _ALLOWED_ORIGINS:
+    # Reject if Origin is missing OR not in allowlist.
+    # Empty/missing Origin (non-browser attacker scripts) must also be rejected.
+    if not origin or origin not in _ALLOWED_ORIGINS:
         logger.warning(f"WebSocket rejected: disallowed origin '{origin}'")
         await websocket.close(code=1008)  # 1008 = Policy Violation
         return

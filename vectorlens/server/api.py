@@ -117,6 +117,9 @@ class LLMRequestEventData(BaseModel):
     temperature: float
     max_tokens: int
     vector_query_id: str | None = None
+    # Conversation DAG fields
+    parent_request_id: str | None = None
+    chain_step: str = ""
 
     @staticmethod
     def from_event(event: Any) -> LLMRequestEventData:
@@ -131,6 +134,8 @@ class LLMRequestEventData(BaseModel):
             temperature=event.temperature,
             max_tokens=event.max_tokens,
             vector_query_id=event.vector_query_id,
+            parent_request_id=getattr(event, "parent_request_id", None),
+            chain_step=getattr(event, "chain_step", ""),
         )
 
 
@@ -225,6 +230,7 @@ class SessionDetail(BaseModel):
 
     id: str
     created_at: float
+    conversation_id: str = ""
     vector_queries: list[VectorQueryEventData] = Field(default_factory=list)
     llm_requests: list[LLMRequestEventData] = Field(default_factory=list)
     llm_responses: list[LLMResponseEventData] = Field(default_factory=list)
@@ -235,6 +241,7 @@ class SessionDetail(BaseModel):
         return SessionDetail(
             id=session.id,
             created_at=session.created_at,
+            conversation_id=getattr(session, "conversation_id", ""),
             vector_queries=[VectorQueryEventData.from_event(q) for q in session.vector_queries],
             llm_requests=[LLMRequestEventData.from_event(r) for r in session.llm_requests],
             llm_responses=[LLMResponseEventData.from_event(r) for r in session.llm_responses],

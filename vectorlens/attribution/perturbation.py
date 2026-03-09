@@ -82,7 +82,11 @@ def _remove_chunk_from_messages(
     """
     new_messages = []
     chunk_prefix = chunk_text[:120].strip()  # first ~120 chars for truncation
-    chunk_first_sentence = chunk_text.split(".")[0][:80].strip()  # first sentence
+    # Only extract first sentence when chunk has a period — without one
+    # (code blocks, JSON, URLs), split(".")[0] returns the entire chunk.
+    chunk_first_sentence = (
+        chunk_text.split(".")[0][:80].strip() if "." in chunk_text else ""
+    )
 
     for msg in messages:
         new_msg = msg.copy()

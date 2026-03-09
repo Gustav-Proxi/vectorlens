@@ -798,6 +798,74 @@ vectorlens share abc123-def456
 
 Current hallucination detection is **sentence-level**: if a sentence doesn't match retrieved chunks, it's flagged as hallucinated. But a sentence can be *mostly* correct with one hallucinated word mixed in:
 
+---
+
+## Issue 21: `httpx` Streaming Context Manager Crash (`__getattr__` Magic Methods)
+
+**Labels:** `bug`, `high-priority`, `resilience`
+**Milestone:** v0.2.0
+
+### Description
+
+The `httpx_transport.py` interceptor wraps streaming responses in `_StreamingResponseWrapper` using `__getattr__` to proxy method calls down to the underlying `httpx.Response`. 
+
+However, Python does not forward magic dunder methods (like `__aenter__`, `__enter__`, `__aiter__`) through `__getattr__`. If a host application uses the standard SDK idiom `async with client.send(..., stream=True) as response:`, the interceptor will crash immediately with a `TypeError`.
+
+This needs to be fixed urgently because it completely breaks host applications relying on `httpx` streaming context managers.
+
+### Acceptance Criteria
+- [ ] Explicitly define `__enter__`, `__exit__`, `__aenter__`, and `__aexit__` on `_StreamingResponseWrapper`.
+- [ ] Proxy these methods down to `self._response`.
+- [ ] Explicitly define `__aiter__` and `__iter__` if required for generator iteration.
+
+---
+
+## Issue 22: Strict CSWSH Origin Enforcement for WebSockets
+
+**Labels:** `bug`, `security`
+**Milestone:** v0.2.0
+
+### Description
+
+In `vectorlens/server/app.py`, the WebSocket endpoint correctly checks the `Origin` header against an allowed whitelist. However, the logic is:
+`if origin and origin not in _ALLOWED_ORIGINS:`
+
+This means if the `Origin` header is completely missing (empty), the condition evaluates to `False`, bypassing the check entirely. Standard browsers always send an Origin, but a malicious script on a local network or a tool like `wscat` could connect without one.
+
+### Acceptance Criteria
+- [ ] Change the logic to strict enforcement: `if not origin or origin not in _ALLOWED_ORIGINS:`.
+- [ ] Ensure the server drops the connection (`1008 Policy Violation`) if the origin is missing.
+
+---
+
+## Issue 23: SentenceTransformer Memory Exhaustion on Giant Strings
+
+**Labels:** `enhancement`, `optimization`, `memory`
+**Milestone:** v0.3.0
+
+### Description
+
+Both `perturbation.py` and `hallucination.py` pass the raw `original_output` directly to `SentenceTransformer.encode()`. While the model truncates tokens internally, the pre-tokenization python string is loaded into RAM. If a malicious or runaway LLM returns a 100,000-token hallucination, this can cause massive RAM spikes or thread-blocking before truncation occurs.
+
+### Acceptance Criteria
+- [ ] Pre-truncate strings before passing them to `model.encode()` using a fast heuristic (e.g., maximum string length of `256 * 4` characters).
+- [ ] Apply this uniformly across all sentence embedding targets.
+
+---
+
+## Issue 24: Unbounded Session Memory Bloat
+
+**Labels:** `enhancement`, `optimization`
+**Milestone:** v0.3.0
+
+### Description
+
+`SessionBus` currently retains the last 200 sessions in volatile RAM. Because a "Session" includes all raw input messages, retrieved chunks, and model outputs, storing 200 massive RAG contexts could easily consume 100MB+ of RAM silently.
+
+### Acceptance Criteria
+- [ ] Reduce the default `MAX_SESSIONS` cache size to 50 instead of 200.
+- [ ] (Or) Implement an eviction strategy based on actual memory footprint (e.g., dropping heavy prompts from old sessions while keeping the metadata).
+
 ```
 Output: "Transformers use self-attention to compute token relationships across planets."
          (^ "planets" is hallucinated, but whole sentence flagged as grounded because 0.85 similarity to chunk)

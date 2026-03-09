@@ -65,23 +65,19 @@ def _on_llm_response(event: LLMResponseEvent) -> None:
 def _try_get_hf_model_and_tokenizer(
     session: Any, response_event: LLMResponseEvent
 ) -> Tuple[Optional[Any], Optional[Any]]:
-    """Try to retrieve the HF model + tokenizer used for this response.
+    """Retrieve the HF model + tokenizer for this session.
+
+    Reads from the session object (set by TransformersInterceptor) rather than
+    a global variable, so concurrent sessions each get their own model.
 
     Returns (model, tokenizer) if available, else (None, None).
-
-    Args:
-        session: VectorLens session
-        response_event: The LLM response event
-
-    Returns:
-        Tuple of (model, tokenizer) or (None, None)
     """
     try:
-        import vectorlens.interceptors.transformers_patch as transformers_patch
-
-        if transformers_patch._intercepted_model is not None:
-            return transformers_patch._intercepted_model
-    except (ImportError, AttributeError):
+        model = getattr(session, "hf_model", None)
+        tokenizer = getattr(session, "hf_tokenizer", None)
+        if model is not None and tokenizer is not None:
+            return model, tokenizer
+    except Exception:
         pass
     return None, None
 
@@ -95,6 +91,14 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
         output_text = response_event.output_text
         if not output_text or not output_text.strip():
             return
+
+        # Cap output size before passing to SentenceTransformer to prevent RAM
+        # spikes on giant LLM outputs (100k+ tokens). 50k chars covers ~12k tokens
+        # which is enough for meaningful attribution on any realistic response.
+        _MAX_OUTPUT_CHARS = 50_000
+        if len(output_text) > _MAX_OUTPUT_CHARS:
+            logger.debug(f"Output text capped at {_MAX_OUTPUT_CHARS} chars for attribution")
+            output_text = output_text[:_MAX_OUTPUT_CHARS]
 
         session = bus.get_session(response_event.session_id)
         if not session:

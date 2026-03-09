@@ -89,6 +89,30 @@ pip install pip-audit
 pip-audit
 ```
 
+## Advanced Threat Model & Optimization Limits
+
+Following an exhaustive "Red Team" deep sweep (March 2026), the following theoretical edge cases, vulnerabilities, and optimization limits were identified. **These have deliberately not been patched** to maintain the project's minimal local footprint, but developers should be aware of them:
+
+### 1. `httpx` Streaming Context Manager Crash (Resilience / DoS)
+**Vector**: The `httpx_transport.py` interceptor wraps streaming responses in `_StreamingResponseWrapper` using `__getattr__`. Python does not forward magic dunder methods (like `__aenter__` or `__enter__`) through `__getattr__`.
+**Impact**: If a host application uses `async with client.send(..., stream=True)` with the interceptor active, the host app will immediately crash with a `TypeError`.
+
+### 2. Unbounded JSON Deserialization in SSE Streams (DoS)
+**Vector**: In the `httpx` streaming parser, every Server-Sent Event (SSE) line is parsed via `json.loads(data)` without length limits.
+**Impact**: If a malicious or hijacked LLM endpoint returns a single chunk containing a 500MB JSON payload, it will block the Python event loop and cause an Out-Of-Memory (OOM) crash in the host application.
+
+### 3. Weak Cross-Site WebSocket Hijacking (CSWSH) Enforcement
+**Vector**: The WebSocket route in `app.py` checks `if origin and origin not in _ALLOWED_ORIGINS`. If the `Origin` header is missing entirely or empty, the condition `if origin` evaluates to false, bypassing the whitelist check.
+**Impact**: While standard web browsers *always* send the `Origin` header for WebSockets, a specially crafted non-browser attack script on the local network could bypass this check. Strict enforcement (`if not origin or origin not in...`) is recommended if exposing to a network.
+
+### 4. SentenceTransformer OOM via Giant Prompts (Optimization)
+**Vector**: Both `perturbation.py` and `hallucination.py` pass the raw `original_output` directly to `SentenceTransformer.encode()`. The token limits are managed internally by the HuggingFace backend, but the pre-tokenization string is loaded into memory simultaneously.
+**Impact**: If an LLM returns a 100,000-token output, VectorLens passes this massive string to the C++ ML backend. This can cause massive RAM spikes or thread-blocking in the attribution pipeline before it successfully truncates the input.
+
+### 5. Unbounded Session Memory Bloat (Optimization)
+**Vector**: `SessionBus` retains the last 200 sessions in volatile RAM. A "Session" includes all raw input messages, retrieved chunks, and model outputs.
+**Impact**: 200 sessions × 100k context tokens × 4 bytes = ~80MB per chunk. A heavy debugging day could silently consume gigabytes of the user's RAM. Persistent bounded SQLite storage is recommended.
+
 ## Known Issues
 
 None reported. If you discover a security issue, please report it per the instructions above.

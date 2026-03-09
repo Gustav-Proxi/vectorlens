@@ -148,30 +148,32 @@ class SessionBus:
         return self.get_or_create_session()
 
     def record_vector_query(self, event: VectorQueryEvent) -> None:
-        session = self._resolve_session(event.session_id)
-        event.session_id = session.id
+        # Hold lock through resolve + append to prevent concurrent appends
+        # to the same session list (list resize is not thread-safe under contention)
         with self._lock:
+            session = self._resolve_session(event.session_id)
+            event.session_id = session.id
             session.vector_queries.append(event)
         self._notify("vector_query", event)
 
     def record_llm_request(self, event: LLMRequestEvent) -> None:
-        session = self._resolve_session(event.session_id)
-        event.session_id = session.id
         with self._lock:
+            session = self._resolve_session(event.session_id)
+            event.session_id = session.id
             session.llm_requests.append(event)
         self._notify("llm_request", event)
 
     def record_llm_response(self, event: LLMResponseEvent) -> None:
-        session = self._resolve_session(event.session_id)
-        event.session_id = session.id
         with self._lock:
+            session = self._resolve_session(event.session_id)
+            event.session_id = session.id
             session.llm_responses.append(event)
         self._notify("llm_response", event)
 
     def record_attribution(self, result: AttributionResult) -> None:
-        session = self._resolve_session(result.session_id)
-        result.session_id = session.id
         with self._lock:
+            session = self._resolve_session(result.session_id)
+            result.session_id = session.id
             session.attributions.append(result)
         self._notify("attribution", result)
 
