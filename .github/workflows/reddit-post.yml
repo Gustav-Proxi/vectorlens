@@ -1,0 +1,104 @@
+name: Reddit Promotion Posts
+
+on:
+  schedule:
+    # Day 3 (Wed): r/MachineLearning at 9am EST (14:00 UTC)
+    - cron: '0 14 11 3 *'
+    # Day 4 (Thu): r/LocalLLaMA at 9am EST (14:00 UTC)
+    - cron: '0 14 12 3 *'
+  workflow_dispatch:
+    inputs:
+      subreddit:
+        description: 'Subreddit to post to'
+        required: true
+        default: 'MachineLearning'
+
+jobs:
+  post-to-reddit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine subreddit and content
+        id: content
+        run: |
+          DAY=$(date +%d)
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SUBREDDIT="${{ github.event.inputs.subreddit }}"
+          elif [ "$DAY" = "11" ]; then
+            SUBREDDIT="MachineLearning"
+          else
+            SUBREDDIT="LocalLLaMA"
+          fi
+          echo "subreddit=$SUBREDDIT" >> $GITHUB_OUTPUT
+
+          if [ "$SUBREDDIT" = "MachineLearning" ]; then
+            echo "title=VectorLens: Local token-level RAG attribution without enterprise tools or cloud signup" >> $GITHUB_OUTPUT
+            cat << 'EOF' > /tmp/body.txt
+Built a tool to solve a gap I had: debugging why RAG hallucinates without vendor lock-in or heavy instrumentation.
+
+**The Problem**: Existing RAG observability tools (LangSmith, Arize, Phoenix) require cloud signup, enterprise contracts, or extensive code changes. And none actually show token-level attribution—which chunks caused the hallucination?
+
+**The Technical Approach**:
+1. **Hallucination Detection**: Embed output sentences + retrieved chunks using sentence-transformers (all-MiniLM-L6-v2). Cosine similarity < 0.4 → hallucinated.
+2. **Perturbation Attribution**: Drop each chunk, re-run the LLM, measure output divergence via embedding distance. Score = importance of that chunk.
+3. **Non-blocking**: All detection runs in a background thread. Your RAG code never waits.
+
+**Key Design**: Monkey-patches OpenAI, Anthropic, Gemini, ChromaDB, Pinecone, FAISS, Weaviate clients. Zero code changes. Fully local, no signup.
+
+```python
+import vectorlens
+vectorlens.serve()
+# Your existing RAG code — unchanged
+```
+
+GitHub: https://github.com/Gustav-Proxi/vectorlens — MIT, Python 3.11+.
+EOF
+          else
+            echo "title=VectorLens: Fully local RAG hallucination debugger — no cloud, no API keys, zero data leaves your machine" >> $GITHUB_OUTPUT
+            cat << 'EOF' > /tmp/body.txt
+For anyone running local LLMs with RAG: built a debugging tool that works entirely on your machine.
+
+**What it does**:
+- Intercepts your LLM calls + vector DB queries (OpenAI, Anthropic, local HuggingFace, ChromaDB, FAISS)
+- Detects hallucinated sentences using local sentence-transformers (all-MiniLM, 22MB)
+- Shows attribution: which chunks explained (or failed to prevent) each hallucination
+- Local React dashboard, WebSocket updates, session history
+
+**Why this matters**: All processing stays on your machine. No cloud uploads, no API keys for the debugger itself, no signup.
+
+```python
+import vectorlens
+vectorlens.serve()
+# Your RAG code runs unchanged
+```
+
+GitHub: https://github.com/Gustav-Proxi/vectorlens — MIT, Python 3.11+.
+EOF
+          fi
+          echo "body<<BODYEOF" >> $GITHUB_OUTPUT
+          cat /tmp/body.txt >> $GITHUB_OUTPUT
+          echo "BODYEOF" >> $GITHUB_OUTPUT
+
+      - name: Post to Reddit
+        env:
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_USERNAME: ${{ secrets.REDDIT_USERNAME }}
+          REDDIT_PASSWORD: ${{ secrets.REDDIT_PASSWORD }}
+        run: |
+          pip install praw -q
+          python3 << PYEOF
+          import praw, os
+          reddit = praw.Reddit(
+              client_id=os.environ["REDDIT_CLIENT_ID"],
+              client_secret=os.environ["REDDIT_CLIENT_SECRET"],
+              username=os.environ["REDDIT_USERNAME"],
+              password=os.environ["REDDIT_PASSWORD"],
+              user_agent="vectorlens-promo-bot/1.0"
+          )
+          sub = reddit.subreddit("${{ steps.content.outputs.subreddit }}")
+          post = sub.submit(
+              title="${{ steps.content.outputs.title }}",
+              selftext="""${{ steps.content.outputs.body }}"""
+          )
+          print(f"Posted: https://reddit.com{post.permalink}")
+          PYEOF

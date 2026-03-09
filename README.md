@@ -2,9 +2,11 @@
 
 > **See *why* your RAG hallucinates** — token-level attribution in 30 seconds, zero config, no cloud.
 
+[![PyPI version](https://img.shields.io/pypi/v/vectorlens.svg)](https://pypi.org/project/vectorlens/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests Passing](https://img.shields.io/badge/tests-passing-brightgreen.svg)](tests/)
+[![Tests](https://github.com/Gustav-Proxi/vectorlens/actions/workflows/tests.yml/badge.svg)](https://github.com/Gustav-Proxi/vectorlens/actions)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/vectorlens.svg)](https://pypi.org/project/vectorlens/)
 
 When your RAG pipeline hallucinates, you're left guessing. Which chunk caused it? Did the retriever fail? Did the LLM ignore the context? VectorLens answers these questions in real-time with a local dashboard — no signup, no data leaving your machine.
 

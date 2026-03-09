@@ -1,0 +1,63 @@
+name: Twitter Thread — Day 5
+
+on:
+  schedule:
+    # Day 5 (Fri Mar 13): 9am EST = 14:00 UTC
+    - cron: '0 14 13 3 *'
+  workflow_dispatch:
+
+jobs:
+  post-twitter-thread:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post 10-tweet thread
+        env:
+          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
+          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_SECRET: ${{ secrets.TWITTER_ACCESS_SECRET }}
+        run: |
+          pip install tweepy -q
+          python3 << 'PYEOF'
+          import tweepy, os, time
+
+          client = tweepy.Client(
+              consumer_key=os.environ["TWITTER_API_KEY"],
+              consumer_secret=os.environ["TWITTER_API_SECRET"],
+              access_token=os.environ["TWITTER_ACCESS_TOKEN"],
+              access_token_secret=os.environ["TWITTER_ACCESS_SECRET"],
+          )
+
+          tweets = [
+              "🧵 Debugging RAG is broken. Your LLM hallucinates. You have no idea which retrieved chunk caused it.\n\nPrint statements everywhere. Log file archaeology. Repeat.\n\nI built a tool to fix this. It's called VectorLens.",
+
+              "Three lines of code. No config, no signup, no cloud.\n\nimport vectorlens\nvectorlens.serve()  # opens local dashboard\n# Your RAG code unchanged\n\nYour OpenAI/Anthropic calls? Patched. ChromaDB/Pinecone queries? Patched. Zero code changes.",
+
+              "VectorLens auto-intercepts:\n\n✓ OpenAI, Anthropic, Google Gemini\n✓ ChromaDB, Pinecone, FAISS, Weaviate, pgvector\n✓ HuggingFace Transformers\n✓ LangChain\n\nAdd a new provider? 50-line patch + 2-line registration.",
+
+              "How attribution works:\n\n1. Embed output sentences + retrieved chunks (sentence-transformers, local)\n2. Cosine similarity: which chunks explain each sentence?\n3. Perturb: drop each chunk, re-run LLM, measure divergence\n4. Score: importance weight per chunk\n\nAll in background. Never blocks your code.",
+
+              "The dashboard shows:\n\n• Hallucinated sentences highlighted red\n• Which chunks caused each hallucination\n• Attribution scores (0–100%) per chunk\n• Groundedness % overall\n• Session history\n• Live WebSocket updates",
+
+              "Session history is huge for debugging.\n\nRun 10 RAG queries. Each gets its own session. Click any to see:\n- Exact retrieved chunks\n- Exact LLM messages\n- Which sentences hallucinated\n- Full attribution chain",
+
+              "Why VectorLens > existing tools:\n\nRAGxplorer: Visualizes flows, no hallucination detection\nLangSmith: Cloud signup, enterprise account\nArize Phoenix: Cloud, sends data externally\n\nVectorLens: Local, zero config, token-level attribution, MIT",
+
+              "Privacy matters:\n\n✓ All RAG data stays on your machine\n✓ No cloud uploads ever\n✓ No API keys for the debugger\n✓ Works with Ollama, local Llama, Mistral\n✓ sentence-transformers runs CPU-only\n\nHIPAA/SOC2 data? This is for you.",
+
+              "Open sourced under MIT.\n\nWant to:\n• Add a new LLM provider?\n• Improve hallucination detection?\n• Build time-series analysis for RAG drift?\n• Add Qdrant/LlamaIndex support?\n\nContributions welcome. Issues are open.",
+
+              "Try it:\n\npip install vectorlens\n\n→ https://github.com/Gustav-Proxi/vectorlens\n\nLocal RAG debugging shouldn't require cloud, signup, or reading docs for 45 minutes. VectorLens proves that."
+          ]
+
+          previous_id = None
+          for i, tweet in enumerate(tweets):
+              if previous_id:
+                  response = client.create_tweet(text=tweet, in_reply_to_tweet_id=previous_id)
+              else:
+                  response = client.create_tweet(text=tweet)
+              previous_id = response.data["id"]
+              print(f"Tweet {i+1}/10 posted: {previous_id}")
+              if i < len(tweets) - 1:
+                  time.sleep(30)  # 30s between tweets
+          PYEOF
