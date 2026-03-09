@@ -1,43 +1,48 @@
 # VectorLens
 
-**See why your RAG hallucinates — token-level attribution in 30 seconds, zero config.**
+> **See *why* your RAG hallucinates** — token-level attribution in 30 seconds, zero config, no cloud.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-passing-brightgreen.svg)](tests/)
 
-> **Dashboard screenshot**: Shows hallucinated sentence highlighted in red, retrieved chunks panel below with attribution scores sorted by influence.
+When your RAG pipeline hallucinates, you're left guessing. Which chunk caused it? Did the retriever fail? Did the LLM ignore the context? VectorLens answers these questions in real-time with a local dashboard — no signup, no data leaving your machine.
 
-## Why VectorLens
+<!-- Dashboard screenshot: dark theme showing LLM output with hallucinated sentences highlighted in red,
+     below: retrieved chunks panel with attribution scores, groundedness meter at top (72% green). -->
 
-**The Problem**: RAG debugging is painful. When your LLM hallucinates, you're left guessing which retrieved chunk caused it. Print statements everywhere. Log files. Sift through traces. Repeat.
+## The Problem
 
-**What Exists Doesn't Solve This**:
-- **RAGxplorer** visualizes RAG flows but doesn't detect hallucinations
-- **Arize Phoenix** requires cloud signup and sends data externally
-- **LangSmith** requires enterprise accounts
-- **None** do token-level attribution without heavy instrumentation
+**RAG debugging is painful.** When an LLM hallucinates, you have:
+- Logs showing *what* it said — but not *why*
+- Retrieved chunks — but no way to know which caused the hallucination
+- Existing tools (LangSmith, Arize Phoenix) require cloud accounts, vendor lock-in, and dashboard learning curves
 
-**The Solution**: Three lines of code. Local dashboard. Instant attribution.
+**The gap**: No local tool that connects the dots between retrieved context and LLM output with zero instrumentation.
 
-To see the long-term architectural goals and future features for this project, read our [`VISION.md`](./VISION.md). To see the latest security and stability roadmap, check our [`GITHUB_ISSUES.md`](./GITHUB_ISSUES.md).
+## The Solution
+
+**Three lines of code. Local dashboard. Instant answers.**
 
 ```python
 import vectorlens
-vectorlens.serve()  # Open http://127.0.0.1:7756
+vectorlens.serve()  # http://127.0.0.1:7756
 
-# Your RAG code — unchanged
+# Your RAG code — completely unchanged
 results = collection.query(query_texts=["Q"], n_results=5)
 response = client.chat.completions.create(model="gpt-4o", messages=[...])
 # Dashboard now shows which chunks caused each hallucination
 ```
 
-**What You Get**:
-- Which sentences in the output are hallucinated (highlighted red)
+**What you get**:
+- Hallucinated sentences highlighted in red
 - Which retrieved chunks caused each hallucination
-- Attribution scores (0–100%) showing each chunk's influence
+- Attribution scores (0–100%) per chunk
 - Overall groundedness percentage
-- All running locally, no signup, no data leaving your machine
+- Real-time updates via WebSocket
+- All running locally — zero external dependencies
+
+---
 
 ## How It Works
 
@@ -45,70 +50,95 @@ response = client.chat.completions.create(model="gpt-4o", messages=[...])
 Your RAG code (unchanged)
     │
     ▼
-[Interceptors]──────────────────────────────────────────────┐
- OpenAI │ Anthropic │ Gemini │ ChromaDB │ Pinecone │ FAISS  │
-    │                                                        │
-    ▼                                                        │
-[Session Bus] ← vector queries, LLM requests/responses      │
-    │                                                        │
-    ▼                                                        │
-[Attribution Pipeline]                                       │
- 1. sentence-transformers embeds output + chunks             │
- 2. cosine similarity → hallucination detection              │
- 3. perturbation: drop chunk → re-run → measure divergence   │
-    │                                                        │
-    ▼                                                        │
-[FastAPI + WebSocket] → [React Dashboard]                   ◄┘
+[VectorLens Interceptors]─────────────┐
+ OpenAI │ Anthropic │ Gemini │       │
+ ChromaDB │ Pinecone │ FAISS │       │
+ pgvector │ LangChain │ ...         │
+    │                              │
+    ▼                              │
+[Session Bus]                       │
+ In-process event stream            │
+ (no external services)             │
+    │                              │
+    ▼                              │
+[Attribution Pipeline]              │
+ 1. Detect hallucinated sentences  │
+ 2. Score chunk contributions      │
+ 3. Compute overall groundedness   │
+    │                              │
+    ▼                              │
+[FastAPI Server] ◄─────────────────┘
+    │
+    ▼
+[React Dashboard]
+ http://127.0.0.1:7756
 ```
 
-**The Flow**:
+**The flow**:
 
-1. **Interception** (transparent): Monkey-patches LLM client methods and vector DB query methods. Zero changes to your code.
+1. **Interception** (transparent): Patches LLM client methods and vector DB calls. Zero code changes required.
 
-2. **Event Bus** (in-process): Every vector query, LLM request/response captured in a thread-safe event bus. No network calls, no external services.
+2. **Event Bus** (in-process): Every query and response flows through a thread-safe event bus. No network overhead, no external services.
 
-3. **Attribution Pipeline** (background thread): Runs hallucination detection and chunk attribution in parallel. Never blocks your main code.
+3. **Attribution Pipeline** (background): Runs hallucination detection and chunk scoring in parallel. Never blocks your main RAG code.
 
-4. **Dashboard** (local): React UI shows real-time attribution updates via WebSocket.
+4. **Dashboard** (local): React UI shows results in real-time via WebSocket.
 
 **Key Details**:
-- Uses `sentence-transformers/all-MiniLM-L6-v2` (22MB, CPU-only) to embed sentences and chunks
-- Cosine similarity threshold 0.4 to detect hallucinations (conservative, fewer false positives)
-- Top-3 chunks per sentence for attribution (to avoid noise)
-- Attribution scores computed as normalized similarity weights
+- Uses `sentence-transformers/all-MiniLM-L6-v2` (22MB, CPU-only, no API calls)
+- Cosine similarity threshold 0.4 to detect hallucinations (conservative)
+- Attribution scores computed from top-3 chunks per sentence
+- Conditional attribution: skip deep analysis if response is fully grounded (~50ms vs ~500ms savings)
+
+---
 
 ## Installation
 
+### Base install
+
 ```bash
-# Base install
 pip install vectorlens
+```
 
-# With your LLM provider (choose one or more)
-pip install "vectorlens[openai]"
-pip install "vectorlens[anthropic]"
-pip install "vectorlens[gemini]"
+### With your LLM provider (choose one or more)
 
-# With your vector DB
-pip install "vectorlens[chromadb]"
-pip install "vectorlens[pinecone]"
+```bash
+pip install "vectorlens[openai]"        # OpenAI (GPT-4o, etc.)
+pip install "vectorlens[anthropic]"     # Anthropic (Claude)
+pip install "vectorlens[gemini]"        # Google Gemini
+pip install "vectorlens[mistral]"       # Mistral
+```
 
-# All at once
+### With your vector database
+
+```bash
+pip install "vectorlens[chromadb]"      # ChromaDB
+pip install "vectorlens[pinecone]"      # Pinecone
+pip install "vectorlens[faiss]"         # FAISS
+pip install "vectorlens[weaviate]"      # Weaviate
+```
+
+### Everything at once
+
+```bash
 pip install "vectorlens[all]"
 ```
 
-**Requirements**: Python 3.11+. Minimal dependencies (FastAPI, uvicorn, sentence-transformers, numpy, aiosqlite, httpx).
+**Requirements**: Python 3.11+. Minimal dependencies: FastAPI, uvicorn, sentence-transformers, httpx.
+
+---
 
 ## Quickstart
 
-### Example 1: OpenAI + ChromaDB (Most Common)
+### Example 1 — OpenAI + ChromaDB (Most Common)
 
 ```python
 import vectorlens
 
 # Start the dashboard
-vectorlens.serve()  # Opens http://127.0.0.1:7756 in browser
+vectorlens.serve()  # http://127.0.0.1:7756
 
-# Your existing RAG code — zero changes
+# Your existing RAG code — unchanged
 import chromadb
 import openai
 
@@ -119,8 +149,8 @@ client = openai.OpenAI()
 collection.add(
     ids=["id1", "id2", "id3"],
     documents=[
-        "Attention is a mechanism that allows models to focus on relevant parts of input.",
-        "The transformer architecture uses self-attention to compute relationships between tokens.",
+        "Attention is a mechanism allowing models to focus on relevant input parts.",
+        "The transformer uses self-attention to compute token relationships.",
         "BERT is a large language model trained on masked language modeling."
     ]
 )
@@ -134,7 +164,7 @@ results = collection.query(
 # Build context
 context = "\n".join(results["documents"][0])
 
-# Call LLM
+# LLM call
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[
@@ -147,17 +177,65 @@ response = client.chat.completions.create(
 
 print(response.choices[0].message.content)
 # Dashboard shows:
-# - Retrieved chunks and their vector similarity scores
-# - Which output sentences are hallucinated
-# - Attribution: which chunks explain which sentences
-# - Groundedness: % of output grounded in retrieved chunks
+# - Retrieved chunks and similarity scores
+# - Which sentences are hallucinated
+# - Which chunks explain which sentences
+# - Overall groundedness %
 ```
 
 Visit http://127.0.0.1:7756 in your browser while the script runs.
 
-### Example 2: Anthropic + Custom DB (Manual Event API)
+### Example 2 — Anthropic + Streaming
 
-For unsupported vector DBs, manually record events:
+```python
+import vectorlens
+vectorlens.serve()
+
+import anthropic
+
+client = anthropic.Anthropic()
+
+# Streaming works automatically
+with client.messages.stream(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": "Answer this question based on the context..."
+        }
+    ]
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+
+# Full response reconstructed and attributed after stream ends
+```
+
+### Example 3 — LangChain RetrievalQA
+
+```python
+import vectorlens
+vectorlens.serve()
+
+from langchain.chains import RetrievalQA
+from langchain_openai import ChatOpenAI
+from langchain_chroma import Chroma
+
+# LangChain chain — VectorLens intercepts BaseChatModel + BaseRetriever
+qa = RetrievalQA.from_chain_type(
+    llm=ChatOpenAI(model="gpt-4o"),
+    retriever=Chroma(...).as_retriever(),
+    return_source_documents=True
+)
+
+result = qa.invoke("What is self-attention?")
+# Both retriever results and LLM call captured, linked, attributed
+```
+
+### Example 4 — Custom Vector DB (Manual API)
+
+For unsupported vector databases, manually record events:
 
 ```python
 import vectorlens
@@ -166,9 +244,8 @@ from vectorlens.types import VectorQueryEvent, RetrievedChunk
 
 vectorlens.serve()
 
-# Your custom vector DB search
+# Your custom vector DB search (pgvector, Elasticsearch, Milvus, etc.)
 async def my_pgvector_search(query: str) -> list[dict]:
-    """Example: PostgreSQL + pgvector"""
     results = await pgvector_client.search(query, limit=5)
 
     # Manually record vector query
@@ -187,125 +264,114 @@ async def my_pgvector_search(query: str) -> list[dict]:
         ]
     )
     bus.record_vector_query(event)
-
     return results
 
-# Use in your RAG
-from anthropic import Anthropic
-
-async def rag_query(question: str):
-    chunks = await my_pgvector_search(question)
-    context = "\n".join([c["text"] for c in chunks])
-
-    client = Anthropic()
-    response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",
-        max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Context:\n{context}\n\nQuestion: {question}"
-            }
-        ]
-    )
-    return response.content[0].text
-
-# Run it
-result = asyncio.run(rag_query("What is quantum computing?"))
+# Use in your RAG pipeline
+result = my_pgvector_search("What is quantum computing?")
 # Dashboard shows attribution to pgvector results
 ```
 
+---
+
 ## Supported Integrations
 
-| Provider | Captures | Support |
-|----------|----------|---------|
-| **OpenAI** | model, tokens, cost, latency | ✓ Native |
-| **Anthropic** | model, tokens, cost, latency | ✓ Native |
-| **Google Gemini** | model (SDK v1 & v2), tokens, latency | ✓ Native |
-| **LangChain** | LLM calls, retrievers, chain steps | ✓ Native |
-| **ChromaDB** | similarity scores, metadata, collection | ✓ Native |
-| **Pinecone** | similarity scores, namespace, metadata | ✓ Native |
-| **FAISS** | L2/dot-product distances, metadata | ✓ Native |
-| **Weaviate** | similarity scores, metadata, class | ✓ Native |
-| **pgvector** | SQL similarity operators, metadata | ✓ Native |
-| **HuggingFace Transformers** | model, tokens, latency | ✓ Native |
-| **Custom DB (Elasticsearch, Milvus, etc.)** | via manual event API | ✓ See Example 2 |
+| Provider | Type | What's Captured | Status |
+|---|---|---|---|
+| **OpenAI** | LLM | model, messages, tokens, cost, latency | ✓ Native |
+| **Anthropic** | LLM | same + streaming | ✓ Native |
+| **Google Gemini** | LLM | same + SDK v1 & v2 | ✓ Native |
+| **Mistral** | LLM | same | ✓ Native |
+| **HuggingFace** | LLM | model, tokens, latency + attention weights | ✓ Native |
+| **LangChain** | Framework | LLM calls, retrievers, chain steps | ✓ Native |
+| **ChromaDB** | Vector DB | similarity scores, metadata | ✓ Native |
+| **Pinecone** | Vector DB | same + namespace | ✓ Native |
+| **FAISS** | Vector DB | L2/dot-product distances | ✓ Native |
+| **Weaviate** | Vector DB | similarity scores, metadata | ✓ Native |
+| **pgvector** | Vector DB | SQL similarity operators (`<=>`, `<->`, `<#>`) | ✓ Native |
+| **Custom DB** | Any | via manual event API | ✓ See Example 4 |
 
-**Cost Calculation** (as of Feb 2025):
-- GPT-4o: $5/1M input tokens + $15/1M output tokens
-- Claude 3.5 Sonnet: $3/1M input + $15/1M output
-- Gemini 2.0 Flash: $0.075/1M input + $0.30/1M output
+**Cost Calculation** (as of March 2026):
+- GPT-4o: $5/1M input tokens, $15/1M output tokens
+- Claude 3.5 Sonnet: $3/1M input, $15/1M output
+- Gemini 2.0 Flash: $0.075/1M input, $0.30/1M output
 
-## Dashboard Features
+---
 
-### Session Sidebar (Left Panel)
+## Dashboard Tour
+
+### Session Sidebar (Left)
 - **Live Session** (green dot): Current active session with real-time event updates
-- **Session History** (📋 icon): Previously recorded sessions (cached in localStorage, persist across server restarts)
+- **Session History** (📋): Previously recorded sessions, cached in localStorage, survive server restarts
 - Click any session to view its attribution results
-- Sessions auto-create on first event
 
-### Groundedness Meter (Top Center)
+### Groundedness Meter (Top)
 - **0–100%** scale: Percentage of output grounded in retrieved chunks
-- **Color coding**:
-  - Red (0–30%): Mostly hallucinated — highly skeptical
-  - Yellow (30–70%): Mixed — verify claims carefully
-  - Green (70–100%): Mostly grounded — likely reliable
+- **Color coding**: Red (0–30%) = hallucinated, Yellow (30–70%) = mixed, Green (70–100%) = grounded
 
 ### LLM Output Panel (Center)
 - Full response text with sentence-level highlighting
-  - **Red background**: Hallucinated sentence (cosine similarity to chunks < 0.4)
+  - **Red background**: Hallucinated (cosine similarity < 0.4 to all chunks)
   - **Normal text**: Grounded in retrieved chunks
-- **Hover over any sentence** to see contributing chunks with attribution percentages
-- Metadata shown: token counts, latency (ms), estimated cost (USD)
+- **Hover any sentence**: See contributing chunks with attribution percentages
+- Metadata: token counts, latency (ms), estimated cost (USD)
 
 ### Retrieved Chunks Panel (Right)
-- Sorted by attribution score (descending)
+- Sorted by attribution score (highest to lowest)
 - Each chunk shows:
-  - **Similarity**: Vector DB's original similarity score
-  - **Attribution %**: How much this chunk contributed to the output
-  - **Metadata**: Custom fields from vector DB (source, page number, etc.)
-  - **⚠️ Badge**: If chunk contributed to hallucination
+  - **Similarity**: Original vector DB score
+  - **Attribution %**: How much this chunk influenced the output
+  - **Metadata**: Custom fields (source, page number, etc.)
+  - **⚠️ Badge**: Contributed to hallucination
 - Click to highlight related sentences in output
+
+---
 
 ## Streaming Support
 
-VectorLens now captures streaming responses (`stream=True`). SSE chunks are intercepted at the httpx transport layer, and the full text is reconstructed after the stream completes. Works with:
+VectorLens captures streaming responses (`stream=True`). SSE chunks are intercepted at the httpx transport layer, and the full text is reconstructed after the stream completes.
+
+**Works with**:
 - OpenAI (streaming)
 - Anthropic (streaming)
 - Google Gemini (streaming)
 - Mistral (streaming)
 
-Note: Streaming responses don't include exact token counts in SSE chunks; VectorLens estimates completion tokens from word count.
+**Note**: Streaming responses estimate completion tokens from word count (exact counts unavailable in SSE chunks).
 
-## Multi-turn Agents
+---
+
+## Multi-turn Agents & Conversation DAGs
 
 VectorLens tracks multi-turn conversation DAGs via `parent_request_id` linking. For multi-turn agents:
-- Call `bus.start_conversation()` to get a `conversation_id` (groups related sessions)
-- Each `LLMRequestEvent` includes `parent_request_id` linking child calls to parent
-- The `chain_step` field labels the role (e.g., "agent", "tool_use")
-- Dashboard shows connected call tree instead of isolated calls
 
-Example:
 ```python
-vectorlens.serve()
+import vectorlens
 
-from langchain.chat_models import ChatOpenAI
+conversation_id = vectorlens.bus.start_conversation()
+# All sessions in this conversation share conversation_id
+# LLM calls are linked via parent_request_id → visible as connected tree
+```
+
+Example: LangChain agent automatically linked via parent_request_id:
+
+```python
 from langchain.agents import AgentExecutor, create_openai_functions_agent
+from langchain_openai import ChatOpenAI
 
-# LangChain agent automatically linked via parent_request_id
 agent = create_openai_functions_agent(llm=ChatOpenAI(), ...)
 executor = AgentExecutor(agent=agent, tools=tools)
 
-# Multi-turn calls automatically part of same conversation DAG
 result = executor.invoke({"input": "What is the capital of France?"})
 # Dashboard shows: user query → agent call → tool call → agent response
 ```
+
+---
 
 ## API Reference
 
 ### `vectorlens.serve()`
 
-Start the dashboard server in a background thread and install interceptors.
+Start the dashboard server and install interceptors.
 
 ```python
 url = vectorlens.serve(
@@ -322,8 +388,8 @@ url = vectorlens.serve(
 - Starts FastAPI server on separate daemon thread (non-blocking)
 - Returns immediately
 - Auto-installs interceptors for installed libraries
-- Sets up auto-attribution pipeline
-- If already running, logs warning and returns current URL
+- Opens browser if `open_browser=True`
+- Logs warning if already running
 
 **Example**:
 ```python
@@ -372,7 +438,6 @@ vectorlens.stop() -> None
 - Stops FastAPI server
 - Uninstalls all monkey-patches
 - Restores original client methods
-- Logs completion
 
 **Example**:
 ```python
@@ -395,16 +460,14 @@ url = vectorlens.get_session_url(
 
 **Returns**: Dashboard URL for the session
 
-**Behavior**:
-- If `session_id` provided: returns `http://{host}:{port}/sessions/{session_id}`
-- If `session_id` is None: returns base URL `http://{host}:{port}`
-
 **Example**:
 ```python
 sess_id = vectorlens.new_session()
 url = vectorlens.get_session_url(sess_id)
-print(f"View this session: {url}")
+print(f"View session: {url}")
 ```
+
+---
 
 ## How Attribution Works
 
@@ -413,17 +476,17 @@ print(f"View this session: {url}")
 VectorLens detects hallucinations by comparing semantic similarity:
 
 **Algorithm**:
-1. Split LLM output into sentences using regex (split on `. ` and final `.`)
-2. Embed each sentence using `all-MiniLM-L6-v2` (384-dimensional vectors)
-3. Embed each retrieved chunk using the same model
-4. Compute cosine similarity between each sentence and all chunks
+1. Split LLM output into sentences
+2. Embed each sentence using `all-MiniLM-L6-v2` (384-dimensional, CPU-only)
+3. Embed each retrieved chunk with the same model
+4. Compute cosine similarity between sentence and all chunks
 5. **Detect as hallucinated** if `max(similarities) < 0.4`
 6. For grounded sentences, record top-3 most similar chunks as attribution weights
 
 **Threshold Justification**: 0.4 cosine similarity is conservative:
 - Avoids false positives (marking correct sentences as hallucinated)
-- Works well with sentence-transformers' semantic space
-- Tuned empirically on common RAG failure cases
+- Works well empirically with sentence-transformers' semantic space
+- Tuned on common RAG failure cases
 
 **Conditional Attribution**: Deep attribution (perturbation or attention rollout) only runs when hallucinations detected. Grounded responses skip expensive analysis (~50ms vs ~500ms savings).
 
@@ -435,168 +498,72 @@ VectorLens detects hallucinations by comparing semantic similarity:
 ```
 Output: "Transformers use self-attention to compute token relationships."
 Chunk 1: "The transformer architecture uses self-attention to compute relationships..."
-         Similarity: 0.85 (GROUNDED)
+         Similarity: 0.85 ✓ GROUNDED
 
 Chunk 2: "BERT was trained on Wikipedia data."
-         Similarity: 0.15 (NOT RELEVANT)
+         Similarity: 0.15 ✗ NOT RELEVANT
 
-Max similarity: 0.85 > 0.4 → Grounded
+Max similarity: 0.85 > 0.4 → Sentence is GROUNDED
 ```
 
 **Limitations**:
-- Sentence-level, not token-level (MVP)
+- Sentence-level, not token-level (token-level coming in v0.2)
 - Hallucinated phrase within a grounded sentence may not be flagged
-- May miss subtle semantic errors (e.g., swapped facts)
+- May miss subtle semantic errors (swapped facts)
 
-### Perturbation Attribution (Optional, Expensive)
-
-Measure chunk importance by dropping each and measuring output change:
-
-```python
-from vectorlens.attribution.perturbation import PerturbationAttributor
-
-async def my_llm_call(messages: list[dict]) -> str:
-    """Your LLM call function"""
-    response = await client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages
-    )
-    return response.choices[0].message.content
-
-attributor = PerturbationAttributor(llm_caller=my_llm_call)
-
-# Compute attribution via perturbation
-chunks_with_scores = await attributor.compute(
-    original_messages=messages,
-    chunks=retrieved_chunks,
-    original_output=original_response_text,
-    output_tokens=output_tokens
-)
-
-# For each chunk:
-# attribution_score = 1 - cosine_similarity(original_output, output_without_chunk)
-# Higher score = dropping chunk changed output more = chunk was important
-```
-
-**Cost**: N additional LLM API calls (N = number of chunks). If you retrieve 10 chunks, 10 re-calls. Expensive but accurate.
-
-**Disabled by default** — not called automatically. Opt-in only via explicit code.
+---
 
 ## Architecture
 
 ```
 vectorlens/
-├── __init__.py
-│   └── Public API: serve(), stop(), new_session(), get_session_url()
+├── __init__.py              Public API: serve(), stop(), new_session()
+├── types.py                 Shared dataclasses (Session, LLMRequestEvent, etc.)
+├── session_bus.py           In-process event bus with ContextVar isolation
+├── pipeline.py              Auto-attribution with bounded ThreadPoolExecutor
 │
-├── types.py
-│   └── Shared dataclasses (EventType, Session, LLMRequestEvent, etc.)
+├── interceptors/            Patches for every major LLM SDK + vector DB
+│   ├── httpx_transport.py   Transport layer (OpenAI, Anthropic, Gemini, Mistral)
+│   ├── openai_patch.py      OpenAI SDK (fallback)
+│   ├── anthropic_patch.py   Anthropic SDK (fallback)
+│   ├── gemini_patch.py      Google Gemini (fallback)
+│   ├── langchain_patch.py   LangChain framework
+│   ├── chroma_patch.py      ChromaDB
+│   ├── pinecone_patch.py    Pinecone
+│   ├── faiss_patch.py       FAISS
+│   ├── weaviate_patch.py    Weaviate
+│   ├── pgvector_patch.py    SQLAlchemy pgvector
+│   └── transformers_patch.py HuggingFace pipelines
 │
-├── session_bus.py
-│   └── Thread-safe in-process event bus. Interceptors publish, pipeline subscribes.
+├── detection/               Hallucination detection
+│   └── hallucination.py     Sentence-transformers embedding + similarity
 │
-├── pipeline.py
-│   └── Auto-attribution pipeline. Subscribes to llm_response events.
-│       Runs detection + attribution in background thread.
+├── attribution/             Chunk attribution methods
+│   ├── perturbation.py      LIME-style bounded perturbation
+│   └── attention.py         Attention rollout for local models
 │
-├── interceptors/
-│   ├── __init__.py
-│   │   └── Registry: install_all(), uninstall_all(), get_installed()
-│   │
-│   ├── base.py
-│   │   └── BaseInterceptor abstract class
-│   │
-│   ├── httpx_transport.py
-│   │   └── Patches httpx.AsyncClient.send / httpx.Client.send (SDK-agnostic)
-│   │
-│   ├── openai_patch.py
-│   │   └── Patches openai.resources.chat.completions.Completions.create (fallback)
-│   │
-│   ├── anthropic_patch.py
-│   │   └── Patches anthropic.resources.messages.Messages.create (fallback)
-│   │
-│   ├── gemini_patch.py
-│   │   └── Patches google.generativeai.GenerativeModel.generate_content (fallback)
-│   │
-│   ├── langchain_patch.py
-│   │   └── Patches langchain.BaseChatModel + BaseRetriever
-│   │
-│   ├── chroma_patch.py
-│   │   └── Patches chromadb.api.models.Collection.query
-│   │
-│   ├── pinecone_patch.py
-│   │   └── Patches pinecone.Index.query
-│   │
-│   ├── faiss_patch.py
-│   │   └── Wraps faiss.Index.search (numpy array wrapper)
-│   │
-│   ├── weaviate_patch.py
-│   │   └── Patches weaviate.Client query methods
-│   │
-│   ├── pgvector_patch.py
-│   │   └── Patches SQLAlchemy AsyncSession.execute / Session.execute
-│   │
-│   └── transformers_patch.py
-│       └── Patches huggingface pipeline inference
-│
-├── detection/
-│   └── hallucination.py
-│       ├── HallucinationDetector class
-│       ├── _get_model() singleton (lazy-loads sentence-transformers)
-│       ├── _split_sentences() regex-based sentence splitting
-│       └── detect() returns list[OutputToken] with hallucination flags
-│
-├── attribution/
-│   ├── perturbation.py
-│   │   ├── PerturbationAttributor class
-│   │   ├── compute() async method (N+1 perturbation)
-│   │   ├── compute_lime() async method (K=7 fixed cost)
-│   │   └── _perturb_chunk() async method
-│   │
-│   └── attention.py
-│       ├── AttentionAttributor class
-│       └── compute() for local HuggingFace models
-│
-└── server/
-    ├── app.py
-    │   └── FastAPI app definition + static file serving
-    │
-    ├── api.py
-    │   ├── REST endpoints
-    │   │   ├── GET /status → server status + installed interceptors
-    │   │   ├── GET /sessions → list all sessions
-    │   │   ├── GET /sessions/{id} → full session details
-    │   │   ├── GET /sessions/{id}/attributions → attributions only
-    │   │   ├── POST /sessions/new → create session
-    │   │   └── DELETE /sessions/{id} → delete session
-    │   │
-    │   └── Pydantic models for serialization
-    │
-    └── static/
-        └── Built React dashboard (dist files from npm build)
+└── server/                  FastAPI + React dashboard
+    ├── app.py               FastAPI app, ASGI middleware, WebSocket
+    ├── api.py               REST endpoints
+    └── static/              React dashboard (built dist files)
 
-dashboard/                # React + TypeScript + Tailwind
+dashboard/                   React + TypeScript UI
 ├── src/
-│   ├── components/      # UI components (SessionList, Output, Chunks, etc.)
-│   ├── hooks/           # Custom hooks (useWebSocket, useSessions, etc.)
-│   ├── App.tsx          # Main app component
-│   └── index.css        # Tailwind styles
-├── public/
-├── package.json
-└── tsconfig.json
+│   ├── components/          UI components
+│   ├── hooks/               Custom hooks (useWebSocket, etc.)
+│   └── App.tsx              Main app component
+└── package.json
 ```
 
 **Key Design Patterns**:
 
-1. **Monkey-patching (interceptors)**: Directly patches client library methods. Zero wrapper overhead, zero changes to user code.
-
-2. **Event bus pattern**: SessionBus publishes events. Pipeline subscribes. Loose coupling — easy to add new consumers (e.g., logging, analytics).
-
-3. **Non-blocking attribution**: Background daemon thread. Main code never waits. User sees results instantly.
-
-4. **Lazy-loaded models**: Sentence-transformers model loads on first hallucination detection, not on import. No upfront cost if detection never runs.
-
+1. **Monkey-patching**: Directly patches client library methods. Zero wrapper overhead, zero code changes.
+2. **Event bus**: SessionBus publishes events, pipeline subscribes. Loose coupling.
+3. **Non-blocking attribution**: Background daemon thread. Main code never waits.
+4. **Lazy-loaded models**: Sentence-transformers loads on first hallucination detection, not on import.
 5. **Thread-safe sessions**: All state in SessionBus with locks. Safe for multithreaded usage.
+
+---
 
 ## Running Tests
 
@@ -634,54 +601,68 @@ python -m pytest tests/test_interceptors/ -v
 
 ```bash
 python -m pytest tests/ --cov=vectorlens --cov-report=html
-# Open htmlcov/index.html to view
+# Open htmlcov/index.html
 ```
+
+---
 
 ## Known Limitations
 
 ### Attribution Granularity
-- Current: **sentence-level** detection
-- Future: **token-level** (requires different model)
-- A hallucinated phrase within a grounded sentence may not be flagged
+- **Current**: Sentence-level detection
+- **Future**: Token-level (v0.2+)
+- Hallucinated phrase within a grounded sentence may not be flagged
 
 ### Perturbation Attribution Cost
 - Requires **N additional LLM API calls** (N = chunks retrieved)
 - Example: 10 chunks = 10 re-calls = 11× API cost
-- Disabled by default
-- Opt-in only for expensive analyses
+- Disabled by default, opt-in only
 
 ### Vector DB Support
-- Out-of-the-box: OpenAI, Anthropic, Gemini, ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace, LangChain, pgvector
-- Custom DBs: Use manual event API (see Example 2)
-- Elasticsearch, Milvus, others: Contribute a patch or use manual API
+- **Out-of-the-box**: OpenAI, Anthropic, Gemini, ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace, LangChain, pgvector
+- **Custom DBs**: Use manual event API (see Example 4)
+- **Others** (Elasticsearch, Milvus): Contribute a patch or use manual API
 
 ### macOS + MPS (Metal Performance Shaders)
 - Sentence-transformers with MPS can deadlock in multiprocessing
-- **Workaround**:
-  ```python
-  from sentence_transformers import SentenceTransformer
-  model = SentenceTransformer("all-MiniLM-L6-v2")
-  model.eval()  # Preload in main process
+- **Workaround**: Preload model before serving:
 
-  vectorlens.serve()
-  ```
+```python
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer("all-MiniLM-L6-v2")
+model.eval()
+
+vectorlens.serve()
+```
 
 ### Session Persistence
 - Sessions stored **in-memory only**
 - Server restart = session loss
 - By design for local development
-- SQLite backing planned (TODO)
+- SQLite backing planned
 
-### Port 7756
-- Server hard-binds to port 7756
-- No automatic fallback
-- Future: make configurable
+---
+
+## Performance Notes
+
+- **Embedding time**: ~50ms per sentence (CPU, all-MiniLM-L6-v2)
+- **Attribution pipeline**: Runs in background, non-blocking
+- **Dashboard**: WebSocket updates ~100ms latency
+- **Memory**: ~300MB for model + session data (in-memory)
+
+**For High-Throughput Systems**:
+- Batch embedding calls together
+- Sample (detect only 1-in-N requests)
+- Disable perturbation attribution
+- Consider streaming responses
+
+---
 
 ## Extending VectorLens
 
 ### Adding a New LLM Provider
 
-1. Create `vectorlens/interceptors/myprovider_patch.py`:
+Create `vectorlens/interceptors/myprovider_patch.py`:
 
 ```python
 from vectorlens.interceptors.base import BaseInterceptor
@@ -701,7 +682,7 @@ class MyProviderInterceptor(BaseInterceptor):
             import myprovider
             from myprovider import Client
         except ImportError:
-            return  # Library not installed, skip silently
+            return
 
         self._original_create = Client.create
         Client.create = self._wrap_create(self._original_create)
@@ -724,7 +705,6 @@ class MyProviderInterceptor(BaseInterceptor):
     def _wrap_create(self, original):
         @functools.wraps(original)
         def wrapper(self_, **kwargs):
-            # Extract parameters
             model = kwargs.get("model", "")
             messages = kwargs.get("messages", [])
 
@@ -760,7 +740,7 @@ class MyProviderInterceptor(BaseInterceptor):
         return wrapper
 ```
 
-2. Register in `vectorlens/interceptors/__init__.py`:
+Register in `vectorlens/interceptors/__init__.py`:
 
 ```python
 from vectorlens.interceptors.myprovider_patch import MyProviderInterceptor
@@ -768,14 +748,14 @@ from vectorlens.interceptors.myprovider_patch import MyProviderInterceptor
 _INTERCEPTORS["myprovider"] = MyProviderInterceptor()
 ```
 
-3. Test:
+Test:
 ```bash
 python -c "from vectorlens.interceptors import install_all; print(install_all())"
 ```
 
 ### Adding a New Vector DB
 
-Same pattern. See `vectorlens/interceptors/chroma_patch.py` for reference.
+Same pattern as LLM providers. See `vectorlens/interceptors/chroma_patch.py` for reference.
 
 Key differences:
 - Patch a `query()` or `search()` method
@@ -800,33 +780,7 @@ class HallucinationDetector:
 
 Tests in `tests/test_detection.py`.
 
-## Performance Notes
-
-- **Embedding time**: ~50ms per sentence (CPU, all-MiniLM-L6-v2)
-- **Attribution pipeline**: Runs in background, non-blocking
-- **Dashboard**: WebSocket updates ~100ms latency
-- **Memory**: ~300MB for model + session data (in-memory)
-
-**For High-Throughput Systems**:
-- Batch embedding calls together
-- Sample (detect only 1-in-N requests)
-- Disable perturbation attribution
-- Consider streaming responses (now supported)
-
-## License
-
-MIT License. See LICENSE file for full text.
-
-## Contributing
-
-Contributions welcome!
-
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Add tests for new functionality
-4. Run `pytest tests/ -m "not integration"` before committing
-5. Follow black + isort formatting (auto-applied via pre-commit hooks)
-6. Submit a pull request
+---
 
 ## Troubleshooting
 
@@ -889,7 +843,7 @@ Install with integration tests:
 pip install "vectorlens[all]"
 ```
 
-### "interceptors not installed" warning
+### "Interceptors not installed" warning
 
 Some interceptors fail if their libraries aren't installed. This is expected. Install providers you need:
 
@@ -897,20 +851,51 @@ Some interceptors fail if their libraries aren't installed. This is expected. In
 pip install "vectorlens[openai,chromadb]"
 ```
 
+---
+
 ## Roadmap
 
-- [ ] Token-level (not sentence-level) hallucination detection
-- [ ] Attention-based attribution (no extra LLM calls)
-- [ ] SQLite session persistence
-- [ ] Custom similarity threshold configuration
-- [ ] WebSocket compression
-- [ ] Python 3.10 support
-- [ ] Multimodal RAG (images, audio)
+- [x] v0.1: Sentence-level detection, 8 vector DBs, streaming support
+- [ ] v0.2: Token-level detection, A/B comparison, pytest plugin
+- [ ] v0.3: SQLite persistence, GitHub Actions plugin, multi-project views
+- [ ] v1.0: MCP server, plugin system, multimodal RAG support
+
+See [CHANGELOG.md](CHANGELOG.md) for version history and [CLAUDE.md](CLAUDE.md) for development notes.
+
+---
+
+## Contributing
+
+Contributions welcome! For detailed development setup, see [CLAUDE.md](CLAUDE.md).
+
+**Quick start**:
+
+```bash
+git clone https://github.com/Gustav-Proxi/vectorlens
+pip install -e ".[all]"
+
+# Run tests (fast)
+python -m pytest tests/ -m "not integration"
+
+# Build dashboard
+cd dashboard && npm install && npm run build
+cd .. && npm run dev  # Parallel with pytest
+```
+
+**Good first issues**: See [issues labeled "good first issue"](https://github.com/Gustav-Proxi/vectorlens/issues?q=label%3A%22good+first+issue%22).
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for full text.
+
+---
 
 ## Contact & Support
 
-**Found a bug?** Open an issue on GitHub.
+**Found a bug?** Open an [issue on GitHub](https://github.com/Gustav-Proxi/vectorlens/issues).
 
-**Have a question?** Check CLAUDE.md for developer notes and architecture details.
+**Have a question?** Check [CLAUDE.md](CLAUDE.md) for architecture details and gotchas.
 
-**Want to discuss?** Start a discussion in GitHub Issues.
+**Want to discuss?** Start a [discussion](https://github.com/Gustav-Proxi/vectorlens/discussions).
