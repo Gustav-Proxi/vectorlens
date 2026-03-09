@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from vectorlens.types import AttributionResult, LLMResponseEvent, RetrievedChunk
 
@@ -80,6 +81,62 @@ def _try_get_hf_model_and_tokenizer(
     except Exception:
         pass
     return None, None
+
+
+def _make_llm_caller(provider: str, model: str) -> Optional[Callable]:
+    """Build an async LLM caller for LIME perturbation based on provider.
+
+    Returns None if the provider is unsupported or SDK not installed.
+    The caller signature: async (messages: list[dict]) -> str
+    """
+    if provider == "openai":
+        try:
+            import openai
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if not api_key:
+                return None
+            client = openai.AsyncOpenAI(api_key=api_key)
+
+            async def _call_openai(messages: list[dict]) -> str:
+                resp = await client.chat.completions.create(
+                    model=model or "gpt-4o-mini",
+                    messages=messages,
+                    max_tokens=512,
+                    temperature=0.0,
+                )
+                return resp.choices[0].message.content or ""
+
+            return _call_openai
+        except ImportError:
+            return None
+
+    if provider == "anthropic":
+        try:
+            import anthropic
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                return None
+            client = anthropic.AsyncAnthropic(api_key=api_key)
+
+            async def _call_anthropic(messages: list[dict]) -> str:
+                # Anthropic separates system from user messages
+                system = next(
+                    (m["content"] for m in messages if m.get("role") == "system"), ""
+                )
+                user_msgs = [m for m in messages if m.get("role") != "system"]
+                resp = await client.messages.create(
+                    model=model or "claude-haiku-4-5-20251001",
+                    max_tokens=512,
+                    system=system,
+                    messages=user_msgs,
+                )
+                return resp.content[0].text if resp.content else ""
+
+            return _call_anthropic
+        except ImportError:
+            return None
+
+    return None
 
 
 def _run_attribution(response_event: LLMResponseEvent) -> None:
@@ -178,7 +235,6 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
                 from vectorlens.attribution.attention import AttentionAttributor
 
                 attributor = AttentionAttributor()
-                # Reconstruct input text from messages
                 input_text = " ".join(
                     m.get("content", "")
                     for m in (
@@ -197,6 +253,33 @@ def _run_attribution(response_event: LLMResponseEvent) -> None:
                 logger.debug(
                     f"Attention attribution failed, skipping: {e}", exc_info=False
                 )
+        else:
+            # API model (OpenAI/Anthropic/etc) — use LIME perturbation attribution.
+            # Costs exactly N_LIME_SAMPLES=7 extra LLM calls, run concurrently.
+            llm_request = next(
+                (r for r in session.llm_requests if r.id == response_event.request_id),
+                session.llm_requests[-1] if session.llm_requests else None,
+            )
+            if llm_request:
+                llm_caller = _make_llm_caller(llm_request.provider, llm_request.model)
+                if llm_caller is not None:
+                    try:
+                        from vectorlens.attribution.perturbation import PerturbationAttributor
+                        attributor = PerturbationAttributor(llm_caller)
+                        loop = asyncio.new_event_loop()
+                        try:
+                            chunks = loop.run_until_complete(
+                                attributor.compute_lime(
+                                    llm_request.messages, chunks, output_text
+                                )
+                            )
+                        finally:
+                            loop.close()
+                        logger.debug(
+                            f"LIME perturbation attribution complete for {len(chunks)} chunks"
+                        )
+                    except Exception as e:
+                        logger.debug(f"LIME attribution failed: {e}", exc_info=False)
 
         result = AttributionResult(
             session_id=response_event.session_id,

@@ -3,6 +3,19 @@ import { Session } from '../lib/api';
 import { OutputHighlighter } from './OutputHighlighter';
 import { ChunkCard } from './ChunkCard';
 
+const API_BASE = '/api';
+
+async function runDeepAnalysis(sessionId: string, requestId?: string): Promise<void> {
+  const url = requestId
+    ? `${API_BASE}/sessions/${sessionId}/analyze?request_id=${requestId}`
+    : `${API_BASE}/sessions/${sessionId}/analyze`;
+  const resp = await fetch(url, { method: 'POST' });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail ?? resp.statusText);
+  }
+}
+
 interface AttributionViewProps {
   session: Session | null;
   loading: boolean;
@@ -17,6 +30,9 @@ export const AttributionView: React.FC<AttributionViewProps> = ({
   isCached = false,
 }) => {
   const [hoveredChunkId, setHoveredChunkId] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
 
   if (error) {
     return (
@@ -133,6 +149,47 @@ export const AttributionView: React.FC<AttributionViewProps> = ({
                 <div className="text-xs text-[#6a6a6a] mb-1">Hallucinated</div>
                 <span className="text-sm font-bold text-[#e05c5c]">{hallucinated}/{total}</span>
               </div>
+            )}
+            {hallucinated > 0 && (
+              <button
+                onClick={async () => {
+                  setAnalyzing(true);
+                  setAnalyzeError(null);
+                  setAnalyzeSuccess(false);
+                  try {
+                    const reqId = session.llm_requests?.[0]?.id;
+                    await runDeepAnalysis(session.id, reqId);
+                    setAnalyzeSuccess(true);
+                    setTimeout(() => setAnalyzeSuccess(false), 3000);
+                  } catch (e: any) {
+                    setAnalyzeError(e.message ?? 'Deep analysis failed');
+                  } finally {
+                    setAnalyzing(false);
+                  }
+                }}
+                disabled={analyzing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium border transition-colors disabled:opacity-50"
+                style={{
+                  background: analyzeSuccess ? '#1a2a1a' : '#1a1a2a',
+                  borderColor: analyzeSuccess ? '#5ce05c' : '#3a3a6a',
+                  color: analyzeSuccess ? '#5ce05c' : '#a0a0e0',
+                }}
+                title="Run LIME perturbation attribution — makes 7 extra LLM calls to measure causal chunk influence"
+              >
+                {analyzing ? (
+                  <>
+                    <span className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
+                    Analyzing…
+                  </>
+                ) : analyzeSuccess ? (
+                  <>✓ Updated</>
+                ) : (
+                  <>🔬 Deep Analysis</>
+                )}
+              </button>
+            )}
+            {analyzeError && (
+              <div className="text-xs text-[#e05c5c] max-w-48 text-right">{analyzeError}</div>
             )}
           </div>
         </div>

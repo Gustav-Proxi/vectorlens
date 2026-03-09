@@ -307,6 +307,78 @@ async def get_session_attributions(session_id: str) -> list[AttributionData]:
     return [AttributionData.from_result(a) for a in session.attributions]
 
 
+@router.post("/sessions/{session_id}/analyze", response_model=AttributionData)
+async def deep_analyze_session(session_id: str, request_id: str | None = None) -> AttributionData:
+    """Run LIME perturbation deep attribution on demand for API models.
+
+    Makes N_LIME_SAMPLES (7) extra LLM calls to measure per-chunk causal influence.
+    Updates the stored attribution and returns the result.
+    """
+    session = bus.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
+
+    # Find the target LLM request
+    llm_request = None
+    if request_id:
+        llm_request = next((r for r in session.llm_requests if r.id == request_id), None)
+    if llm_request is None and session.llm_requests:
+        llm_request = session.llm_requests[-1]
+    if llm_request is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No LLM requests in session")
+
+    # Find matching response
+    llm_response = next((r for r in session.llm_responses if r.request_id == llm_request.id), None)
+    if llm_response is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No LLM response found for request")
+
+    # Get chunks
+    chunks = []
+    if session.vector_queries:
+        query = session.vector_queries[-1]
+        chunks = list(query.results)
+    if not chunks:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No chunks to analyze")
+
+    # Build LLM caller
+    from vectorlens.pipeline import _make_llm_caller
+    from vectorlens.attribution.perturbation import PerturbationAttributor
+    from vectorlens.detection.hallucination import HallucinationDetector
+    from vectorlens.types import AttributionResult
+
+    llm_caller = _make_llm_caller(llm_request.provider, llm_request.model)
+    if llm_caller is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Provider '{llm_request.provider}' not supported for deep analysis (need OPENAI_API_KEY or ANTHROPIC_API_KEY)"
+        )
+
+    # Run detection + LIME
+    detector = HallucinationDetector()
+    output_tokens = detector.detect(llm_response.output_text, chunks)
+    grounded = sum(1 for t in output_tokens if not t.is_hallucinated)
+    overall_groundedness = grounded / len(output_tokens) if output_tokens else 1.0
+
+    attributor = PerturbationAttributor(llm_caller)
+    chunks = await attributor.compute_lime(llm_request.messages, chunks, llm_response.output_text)
+
+    # Mark hallucination-causing chunks
+    for chunk in chunks:
+        chunk.caused_hallucination = overall_groundedness < 0.5 and chunk.attribution_score > 0.6
+
+    result = AttributionResult(
+        session_id=session_id,
+        request_id=llm_request.id,
+        response_id=llm_response.id,
+        chunks=chunks,
+        output_tokens=output_tokens,
+        overall_groundedness=overall_groundedness,
+        hallucinated_spans=[],
+    )
+    bus.record_attribution(result)
+    return AttributionData.from_result(result)
+
+
 @router.post("/sessions/new", response_model=SessionSummary)
 async def create_session() -> SessionSummary:
     """Create a new session and set it as active."""
