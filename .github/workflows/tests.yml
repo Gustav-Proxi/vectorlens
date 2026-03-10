@@ -25,6 +25,9 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Install CPU-only torch (avoids 2GB GPU wheel)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
       - name: Install dependencies
         run: pip install -e ".[test]"
 
