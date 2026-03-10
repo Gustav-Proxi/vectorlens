@@ -33,9 +33,14 @@ export interface AttributionResult {
 
 export interface VectorQuery {
   id: string;
-  query: string;
+  session_id: string;
   timestamp: number;
-  vector_model: string;
+  db_type: string;
+  collection: string;
+  query_text: string;
+  query_embedding: number[];
+  top_k: number;
+  results: RetrievedChunk[];
 }
 
 export interface LLMRequest {

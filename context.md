@@ -6,7 +6,7 @@
 
 **Problem solved**: RAG debugging is painful—when an LLM hallucinates, you're left guessing which chunk caused it. VectorLens automatically detects hallucinations via semantic similarity and shows chunk-level attribution without configuration.
 
-**Current status** (v0.1.3): Shipped to PyPI. Added streaming capture, LangChain interceptor, conversation DAG, robust chunk removal, model download progress, and pgvector native support. 117+ tests passing. GitHub live.
+**Current status** (v0.1.3): Shipped to PyPI. Added streaming capture, LangChain interceptor, conversation DAG, robust chunk removal, model download progress, pgvector native support. Issue #8 completed: token-level heatmap with attention attribution for local HF models. 67 tests passing. GitHub live.
 
 ## Tech Stack
 
@@ -24,7 +24,7 @@
 - **SessionBus** (`session_bus.py`): Thread-safe in-process event stream with `contextvars.ContextVar` isolation. Each asyncio task and thread gets its own session. Stores up to 200 sessions with LRU eviction. Supports conversation DAG via `conversation_id` and `parent_request_id`.
 - **Pipeline** (`pipeline.py`): Background thread with bounded ThreadPoolExecutor (max_workers=3, max_pending=50 via Semaphore). Subscribes to `llm_response` events; runs hallucination detection + conditional deep attribution asynchronously. Tries attention rollout (local HF) → LIME perturbation (API models) as attribution fallback.
 - **Detection** (`detection/hallucination.py`): Embeds sentences and chunks using sentence-transformers, computes cosine similarity, flags hallucinated tokens if max similarity < 0.4. Returns `list[OutputToken]` with `chunk_attributions` dict. Model download shows progress on first use.
-- **Attribution** (`attribution/perturbation.py`): Two methods: `compute()` (N+1 perturbation, expensive, backward compat) and `compute_lime()` (K=7 random masks, ridge regression, fixed cost). Robust chunk removal via 3-tier fallback (exact → 120-char prefix → first-sentence match). For local models: attention rollout (`attribution/attention.py`) extracts token-level weights.
+- **Attribution** (`attribution/perturbation.py`): Two methods: `compute()` (N+1 perturbation, expensive, backward compat) and `compute_lime()` (K=7 random masks, ridge regression, fixed cost). Robust chunk removal via 3-tier fallback (exact → 120-char prefix → first-sentence match). For local models: attention rollout (`attribution/attention.py`) with `compute_per_token()` extracts token-level attention weights for per-output-subword-token attribution; requires `attn_implementation='eager'` (not SDPA).
 - **Server** (`server/app.py`, `server/api.py`): FastAPI with pure ASGI body size middleware (1MB limit), CORS (localhost-only), WebSocket Origin validation. REST endpoints for session CRUD, WebSocket for real-time event streaming.
 
 ## File Structure
@@ -32,7 +32,7 @@
 ```
 vectorlens/
 ├── __init__.py              # Public API: serve(), stop(), new_session(), get_session_url()
-├── types.py                 # Dataclasses: EventType, Session, LLMRequestEvent, AttributionResult, etc.
+├── types.py                 # Dataclasses: EventType, Session, LLMRequestEvent, AttributionResult, TokenHeatmapEntry, etc.
 ├── session_bus.py           # SessionBus singleton: ContextVar isolation, thread-safe event stream + session manager
 ├── pipeline.py              # Auto-attribution pipeline (subscribes to llm_response), bounded executor (3 workers, 50 pending)
 ├── cli.py                   # CLI entry point
@@ -62,7 +62,7 @@ vectorlens/
     ├── api.py               # REST endpoints (GET /status, /sessions, /sessions/{id}, etc.)
     └── __init__.py
 
-tests/                        # 117+ tests total
+tests/                        # 67 tests total
 ├── test_detection.py        # HallucinationDetector unit + integration tests
 ├── test_attribution.py      # PerturbationAttributor + AttentionAttributor tests
 ├── test_pipeline.py         # Auto-attribution pipeline tests
@@ -77,7 +77,7 @@ dashboard/                    # React + TypeScript + Tailwind
 │   ├── App.tsx              # Main app component, session routing
 │   ├── components/
 │   │   ├── SessionList.tsx  # Left sidebar: session history, active indicator
-│   │   ├── OutputHighlighter.tsx # Center: LLM output with red hallucinated spans
+│   │   ├── OutputHighlighter.tsx # Center: LLM output with red hallucinated spans; toggle "Token heatmap" / "Sentence view"
 │   │   ├── ChunkCard.tsx    # Right: retrieved chunks, attribution %, similarity scores
 │   │   └── AttributionView.tsx # Full attribution details view
 │   ├── hooks/
@@ -145,7 +145,7 @@ cd dashboard && npm run build  # Produces dist/
 - Sentence-level hallucination detection (cosine similarity, threshold 0.4)
 - Smart/conditional attribution: skips deep work when fully grounded (~50ms vs ~500ms)
 - LIME-style bounded perturbation (K=7, fixed cost regardless of chunk count)
-- Attention rollout for local HuggingFace models (zero extra LLM calls)
+- Token-level attention heatmap for local HuggingFace models (per-output-subword-token attribution, zero extra LLM calls)
 - Real-time WebSocket updates to React dashboard
 - Session persistence (in-memory, LocalStorage for UI history)
 - Attribution scores via normalized similarity weights
@@ -154,11 +154,13 @@ cd dashboard && npm run build  # Produces dist/
 - Pure ASGI body middleware (POST/PUT/PATCH now work correctly, 1MB limit)
 - Bounded attribution queue (max_pending=50, tasks dropped when exhausted)
 - WebSocket Origin validation (1008 on mismatch)
-- 117+ tests (unit + integration)
+- Token heatmap with per-token attribution weights (TokenHeatmapEntry dataclass)
+- OOM guard: skip token heatmap for sequences > 4096 tokens
+- 67 tests (unit + integration)
 - Graceful error handling (all errors logged, never crash)
 
 ### Known Gaps
-- **Sentence-level only** (not token-level): MVP uses sentence-transformers; true token-level requires attention weight extraction from local models only (OpenAI/Anthropic API models don't expose attention)
+- **Attention requires eager mode**: Modern transformers default to SDPA attention, which returns `None`. Load local models with `attn_implementation='eager'` to expose attention weights for token heatmap.
 - **WebSocket no auth**: Assumes localhost-only; CORS restricted to `127.0.0.1:7756`, `localhost:5173` (Vite dev)
 - **Session loss on restart**: In-memory only, no SQLite backing (TODO)
 - **Port hard-coded to 7756**: No automatic fallback if busy (TODO)

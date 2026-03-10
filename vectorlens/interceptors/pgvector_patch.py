@@ -29,9 +29,13 @@ def _get_sql_string(statement: Any) -> str:
     """Extract SQL string from various SQLAlchemy statement types."""
     if isinstance(statement, str):
         return statement
-    # TextClause (from text(...))
+    # TextClause (from text(...)) — .text holds the raw SQL string
     if hasattr(statement, "text"):
         return str(statement.text)
+    # BoundTextClause (from text(...).bindparams(...))
+    # SQLAlchemy wraps the TextClause; the inner clause is accessible via ._clause
+    if hasattr(statement, "_clause") and hasattr(statement._clause, "text"):
+        return str(statement._clause.text)
     # Compiled query objects
     try:
         return str(statement)
