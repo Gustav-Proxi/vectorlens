@@ -205,7 +205,7 @@ def test_compute_per_token_returns_empty_on_import_error():
 def test_compute_no_attentions_returns_zeros_unit():
     """When model.attentions is None, all chunk scores stay 0.0 (no HF model needed)."""
     import unittest.mock as mock
-    import torch
+    torch = pytest.importorskip("torch")
 
     attributor = AttentionAttributor()
     chunks = [
@@ -232,7 +232,7 @@ def test_compute_no_attentions_returns_zeros_unit():
 def test_compute_per_token_equal_weight_fallback():
     """When no chunk text appears in the prompt, equal weights are assigned."""
     import unittest.mock as mock
-    import torch
+    torch = pytest.importorskip("torch")
 
     attributor = AttentionAttributor()
     chunks = [
@@ -275,7 +275,7 @@ def test_compute_per_token_equal_weight_fallback():
 def test_compute_per_token_empty_prompt():
     """Empty prompt_text yields equal-weight fallback without crashing."""
     import unittest.mock as mock
-    import torch
+    torch = pytest.importorskip("torch")
 
     attributor = AttentionAttributor()
     chunks = [RetrievedChunk(chunk_id="c1", text="some text", score=0.5)]
