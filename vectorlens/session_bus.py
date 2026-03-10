@@ -48,7 +48,7 @@ class SessionBus:
     """Central event bus — interceptors write, server reads."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._sessions: dict[str, Session] = {}
         self._session_order: list[str] = []  # insertion order for LRU eviction
         self._listeners: dict[str, list[Callable]] = defaultdict(list)
