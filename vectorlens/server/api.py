@@ -396,6 +396,150 @@ async def deep_analyze_session(session_id: str, request_id: str | None = None) -
     return AttributionData.from_result(result)
 
 
+class EmbeddingPoint(BaseModel):
+    """A single point in 2D/3D embedding space for visualization."""
+    id: str
+    text: str           # snippet for tooltip
+    x: float
+    y: float
+    z: float = 0.0
+    type: str           # "chunk" | "graphrag_community" | "cag_document" | "query" | "hallucination"
+    attribution_score: float = 0.0
+    caused_hallucination: bool = False
+    label: str = ""     # community title, doc title, etc.
+
+
+class EmbeddingResponse(BaseModel):
+    points: list[EmbeddingPoint]
+    explained_variance: list[float] = Field(default_factory=list)  # PCA quality [PC1, PC2, PC3]
+
+
+@router.get("/sessions/{session_id}/embeddings", response_model=EmbeddingResponse)
+async def get_session_embeddings(session_id: str) -> EmbeddingResponse:
+    """Return PCA-projected 2D/3D coordinates for all retrieval units in a session.
+
+    Computes embeddings on demand (not stored). Uses PCA (numpy only, no extra deps)
+    to project from 384-dim sentence-transformer space to 3D.
+
+    Points include: retrieved chunks, GraphRAG community units, CAG documents,
+    the LLM query, and any hallucinated output sentences — all in the same space.
+    """
+    import numpy as np
+    from vectorlens.attribution.perturbation import _get_model
+
+    session = bus.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session {session_id} not found")
+
+    texts: list[str] = []
+    meta: list[dict] = []
+
+    # 1. Vector DB chunks (from latest attribution, not raw query — has attribution scores)
+    attribution = session.attributions[-1] if session.attributions else None
+    if attribution:
+        for chunk in attribution.chunks:
+            chunk_type = chunk.metadata.get("type", "chunk") if chunk.metadata else "chunk"
+            label = chunk.metadata.get("title", "") if chunk.metadata else ""
+            texts.append(chunk.text[:500])
+            meta.append({
+                "id": chunk.chunk_id,
+                "text": chunk.text[:120],
+                "type": chunk_type,
+                "attribution_score": chunk.attribution_score,
+                "caused_hallucination": chunk.caused_hallucination,
+                "label": label,
+            })
+
+    # 2. Query text
+    if session.vector_queries:
+        q = session.vector_queries[-1]
+        if q.query_text:
+            texts.append(q.query_text[:500])
+            meta.append({
+                "id": "query",
+                "text": q.query_text[:120],
+                "type": "query",
+                "attribution_score": 0.0,
+                "caused_hallucination": False,
+                "label": "Query",
+            })
+    elif session.llm_requests:
+        req = session.llm_requests[-1]
+        user_msg = next((m.get("content", "") for m in reversed(req.messages) if m.get("role") == "user"), "")
+        if user_msg:
+            texts.append(user_msg[:500])
+            meta.append({
+                "id": "query",
+                "text": user_msg[:120],
+                "type": "query",
+                "attribution_score": 0.0,
+                "caused_hallucination": False,
+                "label": "Query",
+            })
+
+    # 3. Hallucinated output sentences
+    if attribution:
+        hall_texts = set()
+        for tok in attribution.output_tokens:
+            if tok.is_hallucinated and tok.text.strip() and tok.text not in hall_texts:
+                hall_texts.add(tok.text)
+                texts.append(tok.text[:500])
+                meta.append({
+                    "id": f"hall_{tok.position}",
+                    "text": tok.text[:120],
+                    "type": "hallucination",
+                    "attribution_score": tok.hallucination_score,
+                    "caused_hallucination": True,
+                    "label": "Hallucinated",
+                })
+
+    if not texts:
+        return EmbeddingResponse(points=[], explained_variance=[])
+
+    # Embed all texts
+    try:
+        model = _get_model()
+        embeddings = model.encode(texts, convert_to_numpy=True)  # (N, 384)
+    except Exception as e:
+        logger.warning(f"Embedding failed for scatter: {e}")
+        return EmbeddingResponse(points=[], explained_variance=[])
+
+    # PCA to 3D (numpy only)
+    n_components = min(3, len(texts), embeddings.shape[1])
+    centered = embeddings - embeddings.mean(axis=0)
+    try:
+        _, s, Vt = np.linalg.svd(centered, full_matrices=False)
+        projected = centered @ Vt[:n_components].T  # (N, n_components)
+        total_var = float((s ** 2).sum())
+        explained = [float(s[i] ** 2 / total_var) for i in range(n_components)] if total_var > 0 else []
+    except Exception:
+        projected = np.zeros((len(texts), n_components))
+        explained = []
+
+    # Normalize to [-1, 1] for consistent canvas rendering
+    for col in range(n_components):
+        col_range = projected[:, col].max() - projected[:, col].min()
+        if col_range > 0:
+            projected[:, col] = (projected[:, col] - projected[:, col].min()) / col_range * 2 - 1
+
+    points = []
+    for i, m in enumerate(meta):
+        coords = projected[i].tolist()
+        points.append(EmbeddingPoint(
+            id=m["id"],
+            text=m["text"],
+            x=float(coords[0]) if len(coords) > 0 else 0.0,
+            y=float(coords[1]) if len(coords) > 1 else 0.0,
+            z=float(coords[2]) if len(coords) > 2 else 0.0,
+            type=m["type"],
+            attribution_score=m["attribution_score"],
+            caused_hallucination=m["caused_hallucination"],
+            label=m["label"],
+        ))
+
+    return EmbeddingResponse(points=points, explained_variance=explained)
+
+
 @router.post("/sessions/new", response_model=SessionSummary)
 async def create_session() -> SessionSummary:
     """Create a new session and set it as active."""

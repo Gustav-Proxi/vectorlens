@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Session } from '../lib/api';
 import { OutputHighlighter } from './OutputHighlighter';
 import { ChunkCard } from './ChunkCard';
+import { EmbeddingScatter } from './EmbeddingScatter';
 
 const API_BASE = '/api';
 
@@ -33,6 +34,7 @@ export const AttributionView: React.FC<AttributionViewProps> = ({
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
+  const [rightTab, setRightTab] = useState<'chunks' | 'scatter'>('chunks');
 
   if (error) {
     return (
@@ -231,24 +233,55 @@ export const AttributionView: React.FC<AttributionViewProps> = ({
           </div>
         </div>
 
-        {/* RIGHT — Chunks (vertical scroll, no horizontal) */}
+        {/* RIGHT — Chunks / Embedding Scatter */}
         <div className="flex flex-col w-1/2 min-h-0">
-          <div className="flex-shrink-0 px-5 pt-4 pb-2 border-b border-[#2a2a2a]">
-            <h3 className="text-xs font-semibold text-[#6a6a6a] uppercase tracking-widest">
-              Retrieved Chunks <span className="text-[#4a4a4a] normal-case font-normal ml-1">sorted by attribution</span>
-            </h3>
+          {/* Tab bar */}
+          <div className="flex-shrink-0 flex items-center border-b border-[#2a2a2a] px-3 pt-1">
+            <button
+              onClick={() => setRightTab('chunks')}
+              className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors mr-1 ${
+                rightTab === 'chunks'
+                  ? 'border-[#e05c5c] text-[#e8a8a8]'
+                  : 'border-transparent text-[#6a6a6a] hover:text-[#9a9a9a]'
+              }`}
+            >
+              Chunks <span className="text-[#4a4a4a] font-normal ml-1">({sortedChunks.length})</span>
+            </button>
+            <button
+              onClick={() => setRightTab('scatter')}
+              className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
+                rightTab === 'scatter'
+                  ? 'border-[#5c9ae0] text-[#a8c8e8]'
+                  : 'border-transparent text-[#6a6a6a] hover:text-[#9a9a9a]'
+              }`}
+            >
+              Embedding Space
+            </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
-            {sortedChunks.map((chunk, i) => (
-              <ChunkCard
-                key={chunk.chunk_id}
-                chunk={chunk}
-                rank={i + 1}
-                isHighlighted={hoveredChunkId === chunk.chunk_id}
-                onHover={setHoveredChunkId}
+
+          {rightTab === 'chunks' ? (
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2">
+              {sortedChunks.map((chunk, i) => (
+                <ChunkCard
+                  key={chunk.chunk_id}
+                  chunk={chunk}
+                  rank={i + 1}
+                  isHighlighted={hoveredChunkId === chunk.chunk_id}
+                  onHover={setHoveredChunkId}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 p-2">
+              <EmbeddingScatter
+                sessionId={session.id}
+                onPointClick={(point) => {
+                  if (point.type === 'chunk') setHoveredChunkId(point.id);
+                }}
+                className="w-full h-full"
               />
-            ))}
-          </div>
+            </div>
+          )}
         </div>
 
       </div>

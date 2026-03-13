@@ -16,6 +16,7 @@ from typing import Any
 
 import uvicorn
 
+from vectorlens.cag import CAGSession
 from vectorlens.interceptors import install_all, uninstall_all
 from vectorlens.pipeline import setup_auto_attribution
 from vectorlens.server.app import app
@@ -132,6 +133,31 @@ def new_session() -> str:
     return session.id
 
 
+def cag_session(documents: list) -> CAGSession:
+    """Context manager for Cache-Augmented Generation (CAG) sessions.
+
+    Register the full document corpus that was loaded into the LLM context.
+    VectorLens will attribute hallucinations to specific documents using
+    cosine similarity — no retrieval step needed.
+
+    Args:
+        documents: List of documents. Each can be:
+            - str: raw text
+            - dict with 'text' key (and optional 'id', 'title')
+
+    Example:
+        docs = [
+            {"id": "report", "title": "Q4 Report", "text": "Revenue was $5M..."},
+            "Plain text document also works.",
+        ]
+
+        with vectorlens.cag_session(docs):
+            prompt = "\\n\\n".join(d["text"] for d in docs) + "\\n\\nQ: " + query
+            response = client.chat.completions.create(...)
+    """
+    return CAGSession(documents)
+
+
 def get_session_url(session_id: str | None = None) -> str:
     """
     Return URL to view a specific session in dashboard.
@@ -155,4 +181,5 @@ __all__ = [
     "stop",
     "new_session",
     "get_session_url",
+    "cag_session",
 ]

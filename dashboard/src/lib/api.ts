@@ -127,3 +127,26 @@ export async function newSession(): Promise<Session> {
     throw error;
   }
 }
+
+export interface EmbeddingPoint {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  z: number;
+  type: 'chunk' | 'graphrag_community' | 'cag_document' | 'query' | 'hallucination';
+  attribution_score: number;
+  caused_hallucination: boolean;
+  label: string;
+}
+
+export interface EmbeddingResponse {
+  points: EmbeddingPoint[];
+  explained_variance: number[];
+}
+
+export async function fetchEmbeddings(sessionId: string): Promise<EmbeddingResponse> {
+  const response = await fetch(`${API_BASE}/sessions/${sessionId}/embeddings`);
+  if (!response.ok) throw new Error(`Failed to fetch embeddings: ${response.statusText}`);
+  return response.json();
+}

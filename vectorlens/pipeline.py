@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional, Tuple
 
 from vectorlens.types import (
     AttributionResult,
+    CAGContextEvent,
     GraphRAGContextEvent,
     LLMResponseEvent,
     RetrievedChunk,
@@ -184,6 +185,12 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
             )
             return
 
+        # CAG: full corpus in context, no vector DB retrieval
+        cag_ctx = session.cag_contexts[-1] if session.cag_contexts else None
+        if cag_ctx and cag_ctx.documents:
+            _run_cag_attribution(response_event, session, cag_ctx, output_text, bus)
+            return
+
         # Get chunks from the vector query linked to this response, else latest.
         # For GraphRAG local search, text_chunks are used as standard chunks below.
         chunks: list[RetrievedChunk] = []
@@ -338,6 +345,99 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
 
     except Exception as e:
         logger.warning(f"Auto-attribution failed: {e}", exc_info=False)
+
+
+def _run_cag_attribution(
+    response_event: LLMResponseEvent,
+    session: Any,
+    cag_ctx: CAGContextEvent,
+    output_text: str,
+    bus: Any,
+) -> None:
+    """Attribution path for Cache-Augmented Generation.
+
+    No retrieval happened — the full document corpus was in the context.
+    Uses the same cosine similarity approach as GraphRAG global search:
+    hallucinated sentences are compared against all registered documents.
+    """
+    from vectorlens.attribution.graphrag_attribution import (
+        CommunityAttributor,
+    )
+    from vectorlens.detection.hallucination import HallucinationDetector
+    from vectorlens.types import GraphRAGCommunityUnit
+
+    # Convert CAG documents to CommunityUnit-compatible format for reuse of attributor
+    pseudo_communities = [
+        GraphRAGCommunityUnit(
+            unit_id=doc.unit_id,
+            community_id=doc.doc_id,
+            title=doc.title,
+            text=doc.text,
+            rank=float(i),
+        )
+        for i, doc in enumerate(cag_ctx.documents)
+        if doc.text
+    ]
+
+    pseudo_chunks = [
+        RetrievedChunk(chunk_id=u.unit_id, text=u.text, score=1.0)
+        for u in pseudo_communities
+    ]
+
+    detector = HallucinationDetector()
+    output_tokens = detector.detect(output_text, pseudo_chunks)
+
+    grounded = sum(1 for t in output_tokens if not t.is_hallucinated)
+    overall_groundedness = grounded / len(output_tokens) if output_tokens else 1.0
+    hallucinated_count = len(output_tokens) - grounded
+
+    hallucinated_spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(output_tokens):
+        if output_tokens[i].is_hallucinated:
+            start = i
+            while i < len(output_tokens) and output_tokens[i].is_hallucinated:
+                i += 1
+            hallucinated_spans.append((start, i - 1))
+        else:
+            i += 1
+
+    if hallucinated_count > 0:
+        attributor = CommunityAttributor()
+        pseudo_communities = attributor.attribute(output_tokens, pseudo_communities)
+
+    # Serialize as RetrievedChunk with cag_document metadata
+    chunks = [
+        RetrievedChunk(
+            chunk_id=u.unit_id,
+            text=u.text,
+            score=1.0,
+            attribution_score=u.attribution_score,
+            caused_hallucination=u.caused_hallucination,
+            metadata={
+                "type": "cag_document",
+                "doc_id": u.community_id,
+                "title": u.title,
+            },
+        )
+        for u in pseudo_communities
+    ]
+
+    result = AttributionResult(
+        session_id=response_event.session_id,
+        request_id=response_event.request_id,
+        response_id=response_event.id,
+        chunks=chunks,
+        output_tokens=output_tokens,
+        overall_groundedness=overall_groundedness,
+        hallucinated_spans=hallucinated_spans,
+    )
+    bus.record_attribution(result)
+    logger.debug(
+        f"CAG attribution: groundedness={overall_groundedness:.2f}, "
+        f"hallucinated={hallucinated_count}, "
+        f"documents={len(pseudo_communities)}"
+    )
 
 
 def _run_graphrag_global_attribution(

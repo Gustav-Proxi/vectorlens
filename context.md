@@ -6,7 +6,7 @@
 
 **Problem solved**: RAG debugging is painful—when an LLM hallucinates, you're left guessing which chunk caused it. VectorLens automatically detects hallucinations via semantic similarity and shows chunk-level attribution without configuration.
 
-**Current status** (v0.1.4-dev): Shipped to PyPI. Added streaming capture, LangChain interceptor, conversation DAG, robust chunk removal, model download progress, pgvector native support. Issue #8 completed: token-level heatmap with attention attribution for local HF models. GraphRAG (Microsoft) support added: intercepts LocalSearch + GlobalSearch context builders, solves attribution for community-report-based retrieval via semantic similarity. 80 tests passing. GitHub live.
+**Current status** (v0.1.5-dev): Shipped to PyPI. Added streaming capture, LangChain interceptor, conversation DAG, pgvector, token-level heatmap, GraphRAG support, CAG (Cache-Augmented Generation) support, and 2D embedding scatter visualization. All retrieval types (vector chunks, GraphRAG community reports, CAG documents, query, hallucinations) rendered in PCA-projected 2D space in the dashboard. 80 tests passing. GitHub live.
 
 ## Tech Stack
 
@@ -150,6 +150,8 @@ cd dashboard && npm run build  # Produces dist/
 - LIME-style bounded perturbation (K=7, fixed cost regardless of chunk count)
 - Token-level attention heatmap for local HuggingFace models (per-output-subword-token attribution, zero extra LLM calls)
 - **GraphRAG support**: intercepts LocalSearch + GlobalSearch context builders; emits `GraphRAGContextEvent` with text chunks (local) or community units (global); semantic similarity attribution for community reports solves the "no discrete chunk" problem for global search; serialized as `RetrievedChunk` with `metadata["type"]="graphrag_community"` for dashboard display
+- **CAG (Cache-Augmented Generation)**: `vectorlens.cag_session(documents)` context manager; registers full document corpus; same cosine similarity attribution as GraphRAG global; documents appear as `cag_document` type in scatter. Zero retrieval step — works with large-context models (Gemini 1.5, Claude, GPT-4o)
+- **Embedding scatter visualization**: `GET /sessions/{id}/embeddings` endpoint runs PCA on all retrieval units + query + hallucinated sentences, returns 2D/3D coordinates. Dashboard "Embedding Space" tab shows SVG scatter — chunks/communities/CAG docs/query/hallucinations all in one semantic space. Points sized by attribution score, colored by type, hover tooltip shows text snippet
 - Real-time WebSocket updates to React dashboard
 - Session persistence (in-memory, LocalStorage for UI history)
 - Attribution scores via normalized similarity weights

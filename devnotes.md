@@ -354,10 +354,47 @@ This costs K extra LLM calls (one per candidate community) but is more accurate 
 
 ---
 
+---
+
+## CAG Support — 2026-03-13
+
+**What**: `vectorlens.cag_session(documents)` context manager for Cache-Augmented Generation pipelines. CAG loads the full document corpus into LLM context (no retrieval step), works with large-context models.
+
+**Attribution**: Same cosine similarity approach as GraphRAG global search — `CommunityAttributor` reused by converting `CAGDocumentUnit` → `GraphRAGCommunityUnit`. Zero extra LLM calls.
+
+**API**:
+```python
+with vectorlens.cag_session([
+    {"id": "doc1", "title": "Report", "text": "..."},
+]) as session:
+    response = client.chat.completions.create(...)
+```
+
+**Files**: `vectorlens/cag.py`, `vectorlens/types.py` (CAGDocumentUnit, CAGContextEvent), `session_bus.record_cag_context()`, `pipeline._run_cag_attribution()`
+
+**Gotcha**: CAG pipeline priority is: GraphRAG global > CAG > vector queries. If a session has both a CAG corpus and vector queries (unusual but possible), CAG wins.
+
+---
+
+## Embedding Scatter Visualization — 2026-03-13
+
+**Endpoint**: `GET /sessions/{id}/embeddings` — on-demand, not stored. Embeds all texts via sentence-transformers, runs PCA to 3D (numpy only, zero new deps), normalizes to [-1, 1].
+
+**What's projected together**: retrieved chunks + GraphRAG community units + CAG documents + query text + hallucinated output sentences — all in the same PCA space.
+
+**Why PCA not UMAP**: Zero extra dependencies (numpy already required). PCA is linear so fast. Downside: doesn't preserve local cluster structure as well as UMAP. UMAP can be added as a future enhancement (issue #35).
+
+**Dashboard**: Right panel "Embedding Space" tab in `AttributionView.tsx`. SVG-based scatter, zero new npm deps. Points sized by attribution_score (4–12px), shaped by type (circle/diamond/square/star/red-ring), hover tooltip.
+
+**Gotcha**: `_get_model()` is called from the API thread — this loads sentence-transformers if not already loaded. Will block the first request for ~2s. Acceptable for a debug tool; would need async model loading for production.
+
+---
+
 ## 🗺️ Immediate Roadmap (Next Steps)
 
-1. **GraphRAG dashboard display** — ChunkCard.tsx should render `metadata["type"]="graphrag_community"` differently (show community title, entity count, not just chunk text).
-2. **Broadcast token heatmap feature** — update README, changelog, documentation.
-3. **Streaming edge cases** — test token heatmap with streaming responses.
-4. **Perturbation robustness** — investigate chunk removal failures with real RAG pipelines.
-5. **GraphRAG Tier 2 attribution** — reduce-stage perturbation for higher accuracy global search attribution.
+1. **GraphRAG dashboard: community cards** — ChunkCard.tsx render `metadata.type === "graphrag_community"` differently (show title, community_id badge).
+2. **UMAP option for scatter** — better cluster preservation than PCA; needs `pip install umap-learn`.
+3. **3D scatter toggle** — Plotly.js loaded via dynamic import for optional 3D rotation.
+4. **Broadcast token heatmap feature** — update README, changelog.
+5. **GraphRAG Tier 2 attribution** — reduce-stage perturbation for higher accuracy.
+6. **CAG: chunked corpus** — auto-split large documents into sub-chunks for finer attribution granularity.

@@ -19,6 +19,7 @@ class EventType(str, Enum):
     ATTRIBUTION_COMPUTED = "attribution_computed"
     HALLUCINATION_DETECTED = "hallucination_detected"
     GRAPHRAG_CONTEXT = "graphrag_context"
+    CAG_CONTEXT = "cag_context"
 
 
 @dataclass
@@ -130,6 +131,32 @@ class AttributionResult:
 
 
 @dataclass
+class CAGDocumentUnit:
+    """A document registered for Cache-Augmented Generation (CAG).
+
+    In CAG there is no retrieval step — the full corpus is loaded into
+    the LLM context window. VectorLens treats each document as an
+    attribution unit, scoring by semantic similarity to hallucinated output.
+    """
+    unit_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    doc_id: str = ""
+    title: str = ""
+    text: str = ""
+    # Set after attribution
+    attribution_score: float = 0.0
+    caused_hallucination: bool = False
+
+
+@dataclass
+class CAGContextEvent:
+    """Fired when a CAG session registers its document corpus."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str = ""
+    timestamp: float = field(default_factory=time.time)
+    documents: list[CAGDocumentUnit] = field(default_factory=list)
+
+
+@dataclass
 class GraphRAGCommunityUnit:
     """A community report used as attribution unit for GraphRAG global search.
 
@@ -176,6 +203,7 @@ class Session:
     llm_responses: list[LLMResponseEvent] = field(default_factory=list)
     attributions: list[AttributionResult] = field(default_factory=list)
     graphrag_contexts: list[GraphRAGContextEvent] = field(default_factory=list)
+    cag_contexts: list[CAGContextEvent] = field(default_factory=list)
     conversation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     # Per-session HF model reference — set by TransformersInterceptor so
     # attention attribution uses the correct model in concurrent servers

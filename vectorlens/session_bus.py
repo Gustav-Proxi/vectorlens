@@ -26,6 +26,7 @@ from typing import Callable
 
 from vectorlens.types import (
     AttributionResult,
+    CAGContextEvent,
     GraphRAGContextEvent,
     LLMRequestEvent,
     LLMResponseEvent,
@@ -193,6 +194,13 @@ class SessionBus:
             event.session_id = session.id
             session.graphrag_contexts.append(event)
         self._notify("graphrag_context", event)
+
+    def record_cag_context(self, event: CAGContextEvent) -> None:
+        with self._lock:
+            session = self._resolve_session(event.session_id)
+            event.session_id = session.id
+            session.cag_contexts.append(event)
+        self._notify("cag_context", event)
 
     # ------------------------------------------------------------------
     # Pub/sub
