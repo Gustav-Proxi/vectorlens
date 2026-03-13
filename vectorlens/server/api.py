@@ -403,6 +403,12 @@ async def create_session() -> SessionSummary:
     return SessionSummary.from_session(session)
 
 
+@router.delete("/sessions", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_all_sessions() -> None:
+    """Delete all sessions."""
+    bus.clear_all_sessions()
+
+
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(session_id: str) -> None:
     """Delete a session."""

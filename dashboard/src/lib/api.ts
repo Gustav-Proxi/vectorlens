@@ -104,6 +104,13 @@ export async function fetchSession(id: string): Promise<Session> {
   }
 }
 
+export async function deleteAllSessions(): Promise<void> {
+  const response = await fetch(`${API_BASE}/sessions`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`Failed to clear sessions: ${response.statusText}`);
+  }
+}
+
 export async function newSession(): Promise<Session> {
   try {
     const response = await fetch(`${API_BASE}/sessions/new`, {

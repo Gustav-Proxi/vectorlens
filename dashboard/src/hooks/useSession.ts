@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Session, fetchSession, API_BASE, WS_BASE } from '../lib/api';
+import { Session, fetchSession, API_BASE, WS_BASE, deleteAllSessions } from '../lib/api';
 import {
   getStoredSession,
   loadStoredSessions as loadStoredSessionsUtil,
@@ -371,6 +371,15 @@ export function useSessions(): UseSessionsReturn {
     isConnecting,
     isShowingCached,
     refetch: fetchSessions,
-    clearHistory: clearStoredSessionsUtil,
+    clearHistory: async () => {
+      try {
+        await deleteAllSessions();
+      } catch (e) {
+        console.warn('Failed to clear server sessions:', e);
+      }
+      clearStoredSessionsUtil();
+      setSessions([]);
+      setLiveSessions([]);
+    },
   };
 }

@@ -215,10 +215,10 @@ def _make_async_wrapper(original_execute: Callable) -> Callable:
 
     @functools.wraps(original_execute)
     async def patched_async_execute(
-        self: Any, statement: Any, parameters: Any = None, **kwargs: Any
+        self: Any, statement: Any, params: Any = None, **kwargs: Any
     ) -> Any:
         start = time.time()
-        result = await original_execute(self, statement, parameters, **kwargs)
+        result = await original_execute(self, statement, params, **kwargs)
 
         try:
             sql_str = _get_sql_string(statement)
@@ -258,10 +258,10 @@ def _make_sync_wrapper(original_execute: Callable) -> Callable:
 
     @functools.wraps(original_execute)
     def patched_sync_execute(
-        self: Any, statement: Any, parameters: Any = None, **kwargs: Any
+        self: Any, statement: Any, params: Any = None, **kwargs: Any
     ) -> Any:
         start = time.time()
-        result = original_execute(self, statement, parameters, **kwargs)
+        result = original_execute(self, statement, params, **kwargs)
 
         try:
             sql_str = _get_sql_string(statement)
