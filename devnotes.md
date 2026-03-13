@@ -305,8 +305,59 @@ result = await session.execute(query)
 
 ---
 
+---
+
+## GraphRAG Support — 2026-03-12
+
+### Problem: attribution for GlobalSearch has no discrete retrieval units
+
+Standard RAG returns text chunks from a vector DB — easy to attribute. GraphRAG's GlobalSearch uses map-reduce over community reports (LLM-synthesized summaries). There's no chunk to remove and re-query. This was an open research problem.
+
+**Solution: community reports as attribution units + semantic similarity scoring**
+
+- Community reports ARE discrete — `GlobalSearchCommunityContext.build_context()` selects N of them
+- For a hallucinated sentence H and community C: `cosine_sim(embed(H), embed(C.text))` is a meaningful attribution signal — the community that provided the most "relevant but distorted" context will be semantically closest to what the LLM hallucinated
+- This requires zero extra LLM calls (reuses the sentence-transformers model already loaded)
+- Attribution scores normalized to [0,1]; `caused_hallucination` flagged at > 0.5 post-normalization
+
+**Implementation**:
+- `interceptors/graphrag_patch.py`: patches `LocalSearchMixedContext.build_context()` and `GlobalSearchCommunityContext.build_context()`. Extracts text units (local) or community reports (global) and emits `GraphRAGContextEvent` to the bus.
+- `attribution/graphrag_attribution.py`: `CommunityAttributor.attribute()` — cosine similarity over hallucinated sentences vs. community texts. Max-pooling across sentences.
+- `pipeline.py::_run_graphrag_global_attribution()` — new branch for global search: uses `HallucinationDetector` with community texts as pseudo-chunks, then `CommunityAttributor` for attribution. Serialized as `RetrievedChunk` with `metadata["type"]="graphrag_community"` for API compatibility.
+- `types.py`: `GraphRAGCommunityUnit`, `GraphRAGContextEvent`, `Session.graphrag_contexts`
+- `session_bus.py`: `record_graphrag_context()`
+
+**Interception strategy for LocalSearch**:
+Source text units live in `context_data["sources"]` or `context_data["text_units"]` from `build_context()`. Flattened to `RetrievedChunk` objects → existing LIME pipeline works unchanged.
+
+**Community report object format is version-dependent**: graphrag's `CommunityReport` dataclass uses `summary` or `full_content` field depending on version. `_community_unit_from_report()` handles dict, dataclass, and string via attribute priority chain.
+
+**Context string parsing fallback**: If `context_data` dict doesn't contain community reports in an expected key, `_parse_community_sections()` parses the formatted context string. Supports `## Header` sections and `---` separator blocks.
+
+### Gotchas
+
+- **graphrag is not installed by default**: `GraphRAGInterceptor.install()` silently skips on `ImportError`. No warning emitted — user must `pip install graphrag`.
+- **GlobalSearch makes concurrent map LLM calls**: httpx transport captures these as individual `LLMResponseEvent` entries. They appear as multiple LLM calls per query in the session. Expected behavior.
+- **Community report text may be truncated**: GraphRAG may store summaries vs full_content — `_community_unit_from_report()` prefers `summary` for brevity in attribution UI.
+- **Local search text_chunks get score=1.0**: GraphRAG doesn't expose per-chunk similarity scores from `build_context()`. All text units are treated as equally retrieved.
+- **Pipeline priority**: `session.graphrag_contexts` takes priority over `session.vector_queries` in `_run_attribution()`. If a session has both (unusual), GraphRAG context wins.
+
+### Future: Reduce-Stage Perturbation (Tier 2)
+
+For even more accurate global search attribution:
+1. Capture the reduce LLM call from httpx (messages contain all map responses)
+2. Remove one community's section from the reduce messages
+3. Re-run reduce LLM call, measure output change
+4. High change → high attribution
+
+This costs K extra LLM calls (one per candidate community) but is more accurate than similarity. Not implemented in v1 — similarity already solves the discrete-unit problem.
+
+---
+
 ## 🗺️ Immediate Roadmap (Next Steps)
 
-1. **Broadcast token heatmap feature** — update README, changelog, documentation.
-2. **Streaming edge cases** — test token heatmap with streaming responses.
-3. **Perturbation robustness** — investigate chunk removal failures with real RAG pipelines.
+1. **GraphRAG dashboard display** — ChunkCard.tsx should render `metadata["type"]="graphrag_community"` differently (show community title, entity count, not just chunk text).
+2. **Broadcast token heatmap feature** — update README, changelog, documentation.
+3. **Streaming edge cases** — test token heatmap with streaming responses.
+4. **Perturbation robustness** — investigate chunk removal failures with real RAG pipelines.
+5. **GraphRAG Tier 2 attribution** — reduce-stage perturbation for higher accuracy global search attribution.

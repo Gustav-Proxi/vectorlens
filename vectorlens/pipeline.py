@@ -14,7 +14,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional, Tuple
 
-from vectorlens.types import AttributionResult, LLMResponseEvent, RetrievedChunk, TokenHeatmapEntry
+from vectorlens.types import (
+    AttributionResult,
+    GraphRAGContextEvent,
+    LLMResponseEvent,
+    RetrievedChunk,
+    TokenHeatmapEntry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,9 +170,26 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
         if not session:
             return
 
-        # Get chunks from the vector query linked to this response, else latest
+        # ------------------------------------------------------------------
+        # Source resolution: GraphRAG context takes priority over vector queries.
+        # GraphRAG pipelines don't use vector DB interceptors — their retrieval
+        # goes through the context builder, captured as GraphRAGContextEvent.
+        # ------------------------------------------------------------------
+        graphrag_ctx = session.graphrag_contexts[-1] if session.graphrag_contexts else None
+
+        if graphrag_ctx and graphrag_ctx.search_type == "global":
+            # Global search: attribute via community reports (the novel path)
+            _run_graphrag_global_attribution(
+                response_event, session, graphrag_ctx, output_text, bus
+            )
+            return
+
+        # Get chunks from the vector query linked to this response, else latest.
+        # For GraphRAG local search, text_chunks are used as standard chunks below.
         chunks: list[RetrievedChunk] = []
-        if session.vector_queries:
+        if graphrag_ctx and graphrag_ctx.search_type == "local" and graphrag_ctx.text_chunks:
+            chunks = graphrag_ctx.text_chunks
+        elif session.vector_queries:
             linked_query = None
             for req in session.llm_requests:
                 if req.id == response_event.request_id and req.vector_query_id:
@@ -315,3 +338,89 @@ def _run_attribution(response_event: LLMResponseEvent, _bus: Any = None) -> None
 
     except Exception as e:
         logger.warning(f"Auto-attribution failed: {e}", exc_info=False)
+
+
+def _run_graphrag_global_attribution(
+    response_event: LLMResponseEvent,
+    session: Any,
+    graphrag_ctx: GraphRAGContextEvent,
+    output_text: str,
+    bus: Any,
+) -> None:
+    """Attribution path for GraphRAG GlobalSearch.
+
+    Uses semantic similarity (Tier 1) to attribute hallucinated sentences to
+    community reports — the novel approach that solves the 'no discrete chunk'
+    problem.
+
+    Algorithm:
+      1. Detect hallucinations against community report texts (not chunks)
+      2. For each community report: score = max cosine_sim(community, hallucinated_sentence)
+      3. Normalize to [0,1] — high score = community most 'inspired' the hallucination
+      4. Record AttributionResult with community units serialized as chunks
+    """
+    from vectorlens.attribution.graphrag_attribution import (
+        CommunityAttributor,
+        community_units_to_chunks,
+    )
+    from vectorlens.detection.hallucination import HallucinationDetector
+
+    community_units = graphrag_ctx.community_units
+    if not community_units:
+        logger.debug("GraphRAG global context has no community units, skipping")
+        return
+
+    # Use community report texts as the "chunks" for hallucination detection.
+    # This aligns the detection threshold with what was actually in the prompt.
+    pseudo_chunks = [
+        RetrievedChunk(
+            chunk_id=u.unit_id,
+            text=u.text,
+            score=u.rank,
+        )
+        for u in community_units
+        if u.text
+    ]
+
+    detector = HallucinationDetector()
+    output_tokens = detector.detect(output_text, pseudo_chunks)
+
+    grounded = sum(1 for t in output_tokens if not t.is_hallucinated)
+    overall_groundedness = grounded / len(output_tokens) if output_tokens else 1.0
+    hallucinated_count = len(output_tokens) - grounded
+
+    hallucinated_spans: list[tuple[int, int]] = []
+    i = 0
+    while i < len(output_tokens):
+        if output_tokens[i].is_hallucinated:
+            start = i
+            while i < len(output_tokens) and output_tokens[i].is_hallucinated:
+                i += 1
+            hallucinated_spans.append((start, i - 1))
+        else:
+            i += 1
+
+    if hallucinated_count > 0:
+        attributor = CommunityAttributor()
+        community_units = attributor.attribute(output_tokens, community_units)
+
+    # Serialize community units as RetrievedChunk for the API response.
+    # metadata["type"] = "graphrag_community" lets the dashboard distinguish these.
+    chunks = community_units_to_chunks(community_units)
+
+    result = AttributionResult(
+        session_id=response_event.session_id,
+        request_id=response_event.request_id,
+        response_id=response_event.id,
+        chunks=chunks,
+        output_tokens=output_tokens,
+        overall_groundedness=overall_groundedness,
+        hallucinated_spans=hallucinated_spans,
+    )
+    bus.record_attribution(result)
+    logger.debug(
+        f"GraphRAG global attribution: groundedness={overall_groundedness:.2f}, "
+        f"hallucinated={hallucinated_count}, "
+        f"communities={len(community_units)}, "
+        f"flagged={sum(u.caused_hallucination for u in community_units)}"
+    )

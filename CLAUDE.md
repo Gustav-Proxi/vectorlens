@@ -60,6 +60,9 @@
 - **Conversation DAG is opt-in**: Call `bus.start_conversation()` to get a `conversation_id`. The DAG is built from `parent_request_id` fields; without explicit linking, multi-turn looks like isolated calls.
 - **ChromaDB EphemeralClient hangs**: Don't use `chromadb.Client(settings=Settings(is_persistent=False))` with VectorLens active. Pre-compute embeddings instead.
 - **pgvector interceptor: call vectorlens.serve() first**: Patch AsyncSession/Session before importing from `sqlalchemy.ext.asyncio`.
+- **GraphRAG interceptor silently skips if graphrag not installed**: No warning emitted. If GraphRAG queries aren't being captured, verify `pip install graphrag` and check `get_installed()`.
+- **GraphRAG LocalSearch text_chunks all have score=1.0**: `build_context()` doesn't expose per-chunk similarity; all text units treated as equally retrieved.
+- **GraphRAG GlobalSearch attribution uses semantic similarity, not perturbation**: Community reports are scored by cosine similarity to hallucinated sentences. This is Tier 1 (zero LLM calls). Tier 2 (reduce-stage perturbation) is not yet implemented.
 - **Token boundary alignment**: Pass `add_special_tokens=True` explicitly to ensure BOS/EOS token indices match between tokenizer calls.
 - **SQLAlchemy 2.x with asyncpg**: Use `text().bindparams(**params)` instead of `session.execute(query, params)`.
 

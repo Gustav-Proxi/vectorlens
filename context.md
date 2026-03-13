@@ -6,25 +6,25 @@
 
 **Problem solved**: RAG debugging is painful—when an LLM hallucinates, you're left guessing which chunk caused it. VectorLens automatically detects hallucinations via semantic similarity and shows chunk-level attribution without configuration.
 
-**Current status** (v0.1.3): Shipped to PyPI. Added streaming capture, LangChain interceptor, conversation DAG, robust chunk removal, model download progress, pgvector native support. Issue #8 completed: token-level heatmap with attention attribution for local HF models. 67 tests passing. GitHub live.
+**Current status** (v0.1.4-dev): Shipped to PyPI. Added streaming capture, LangChain interceptor, conversation DAG, robust chunk removal, model download progress, pgvector native support. Issue #8 completed: token-level heatmap with attention attribution for local HF models. GraphRAG (Microsoft) support added: intercepts LocalSearch + GlobalSearch context builders, solves attribution for community-report-based retrieval via semantic similarity. 80 tests passing. GitHub live.
 
 ## Tech Stack
 
 - **Backend**: Python 3.11+, FastAPI, uvicorn, aiosqlite
 - **ML**: sentence-transformers (all-MiniLM-L6-v2, 22MB, CPU-only)
 - **Frontend**: React 18 + TypeScript, Tailwind CSS, Vite
-- **Integrations**: OpenAI, Anthropic, Google Gemini, LangChain, ChromaDB, Pinecone, FAISS, Weaviate, pgvector, HuggingFace Transformers
+- **Integrations**: OpenAI, Anthropic, Google Gemini, LangChain, ChromaDB, Pinecone, FAISS, Weaviate, pgvector, HuggingFace Transformers, Microsoft GraphRAG
 - **Testing**: pytest with markers (`@pytest.mark.integration` for slow tests)
 
 ## Architecture
 
 **Data Flow**: Interceptor → SessionBus (event stream) → Pipeline (attribution) → FastAPI → WebSocket → React Dashboard
 
-- **Interceptors** (`vectorlens/interceptors/`): httpx transport-layer patches for OpenAI/Anthropic/Gemini/Mistral (SDK-version-agnostic), plus SDK-specific patches for vector DBs (ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace). LangChain framework patch (BaseChatModel, BaseRetriever). pgvector SQL interceptor (SQLAlchemy AsyncSession, Session). Each patch captures requests/responses and publishes events to the bus.
+- **Interceptors** (`vectorlens/interceptors/`): httpx transport-layer patches for OpenAI/Anthropic/Gemini/Mistral (SDK-version-agnostic), plus SDK-specific patches for vector DBs (ChromaDB, Pinecone, FAISS, Weaviate, HuggingFace). LangChain framework patch (BaseChatModel, BaseRetriever). pgvector SQL interceptor (SQLAlchemy AsyncSession, Session). GraphRAG context builder patches (LocalSearchMixedContext, GlobalSearchCommunityContext). Each patch captures requests/responses and publishes events to the bus.
 - **SessionBus** (`session_bus.py`): Thread-safe in-process event stream with `contextvars.ContextVar` isolation. Each asyncio task and thread gets its own session. Stores up to 200 sessions with LRU eviction. Supports conversation DAG via `conversation_id` and `parent_request_id`.
 - **Pipeline** (`pipeline.py`): Background thread with bounded ThreadPoolExecutor (max_workers=3, max_pending=50 via Semaphore). Subscribes to `llm_response` events; runs hallucination detection + conditional deep attribution asynchronously. Tries attention rollout (local HF) → LIME perturbation (API models) as attribution fallback.
 - **Detection** (`detection/hallucination.py`): Embeds sentences and chunks using sentence-transformers, computes cosine similarity, flags hallucinated tokens if max similarity < 0.4. Returns `list[OutputToken]` with `chunk_attributions` dict. Model download shows progress on first use.
-- **Attribution** (`attribution/perturbation.py`): Two methods: `compute()` (N+1 perturbation, expensive, backward compat) and `compute_lime()` (K=7 random masks, ridge regression, fixed cost). Robust chunk removal via 3-tier fallback (exact → 120-char prefix → first-sentence match). For local models: attention rollout (`attribution/attention.py`) with `compute_per_token()` extracts token-level attention weights for per-output-subword-token attribution; requires `attn_implementation='eager'` (not SDPA).
+- **Attribution** (`attribution/perturbation.py`): Two methods: `compute()` (N+1 perturbation, expensive, backward compat) and `compute_lime()` (K=7 random masks, ridge regression, fixed cost). Robust chunk removal via 3-tier fallback (exact → 120-char prefix → first-sentence match). For local models: attention rollout (`attribution/attention.py`) with `compute_per_token()` extracts token-level attention weights for per-output-subword-token attribution; requires `attn_implementation='eager'` (not SDPA). For GraphRAG global search: `attribution/graphrag_attribution.py` — `CommunityAttributor` uses cosine similarity to attribute hallucinated sentences to community reports (zero extra LLM calls).
 - **Server** (`server/app.py`, `server/api.py`): FastAPI with pure ASGI body size middleware (1MB limit), CORS (localhost-only), WebSocket Origin validation. REST endpoints for session CRUD, WebSocket for real-time event streaming.
 
 ## File Structure
@@ -49,6 +49,7 @@ vectorlens/
 │   ├── weaviate_patch.py    # Patches weaviate.Client query methods
 │   ├── pgvector_patch.py    # Patches SQLAlchemy AsyncSession.execute + Session.execute
 │   ├── transformers_patch.py# Patches huggingface pipeline inference
+│   ├── graphrag_patch.py    # Patches GraphRAG LocalSearchMixedContext + GlobalSearchCommunityContext
 │   └── __init__.py          # Registry: install_all(), uninstall_all(), get_installed()
 ├── detection/
 │   ├── hallucination.py     # HallucinationDetector: embed sentences, cosine similarity, detect tokens
@@ -56,13 +57,14 @@ vectorlens/
 ├── attribution/
 │   ├── perturbation.py      # PerturbationAttributor: compute() (N+1), compute_lime() (K=7 fixed)
 │   ├── attention.py         # AttentionAttributor: token-level attention extraction for local HF models
+│   ├── graphrag_attribution.py # CommunityAttributor: semantic similarity attribution for GraphRAG global search
 │   └── __init__.py
 └── server/
     ├── app.py               # FastAPI app, RequestSizeLimitMiddleware (pure ASGI), WebSocket, CORS, static serving
     ├── api.py               # REST endpoints (GET /status, /sessions, /sessions/{id}, etc.)
     └── __init__.py
 
-tests/                        # 67 tests total
+tests/                        # 80 tests total
 ├── test_detection.py        # HallucinationDetector unit + integration tests
 ├── test_attribution.py      # PerturbationAttributor + AttentionAttributor tests
 ├── test_pipeline.py         # Auto-attribution pipeline tests
@@ -70,6 +72,7 @@ tests/                        # 67 tests total
 ├── test_server.py           # FastAPI endpoint tests
 ├── test_types.py            # SessionBus, Session, event serialization tests
 ├── test_integration.py      # Full end-to-end with mocked LLM + real sentence-transformers
+├── test_graphrag_attribution.py # CommunityAttributor, GraphRAGInterceptor, context parsing
 └── conftest.py              # pytest fixtures, mocked interceptor clients
 
 dashboard/                    # React + TypeScript + Tailwind
@@ -146,6 +149,7 @@ cd dashboard && npm run build  # Produces dist/
 - Smart/conditional attribution: skips deep work when fully grounded (~50ms vs ~500ms)
 - LIME-style bounded perturbation (K=7, fixed cost regardless of chunk count)
 - Token-level attention heatmap for local HuggingFace models (per-output-subword-token attribution, zero extra LLM calls)
+- **GraphRAG support**: intercepts LocalSearch + GlobalSearch context builders; emits `GraphRAGContextEvent` with text chunks (local) or community units (global); semantic similarity attribution for community reports solves the "no discrete chunk" problem for global search; serialized as `RetrievedChunk` with `metadata["type"]="graphrag_community"` for dashboard display
 - Real-time WebSocket updates to React dashboard
 - Session persistence (in-memory, LocalStorage for UI history)
 - Attribution scores via normalized similarity weights
@@ -188,6 +192,7 @@ cd dashboard && npm run build  # Produces dist/
 | **Vector DB** | Weaviate | enterprise vector DB | ✓ |
 | **Vector DB** | pgvector | PostgreSQL + SQLAlchemy | ✓ |
 | **Vector DB** | Custom | via manual event API | ✓ |
+| **GraphRAG** | Microsoft GraphRAG | LocalSearch + GlobalSearch | ✓ |
 
 ## Architecture Decisions
 
@@ -207,6 +212,7 @@ cd dashboard && npm run build  # Produces dist/
 14. **pgvector SQL interceptor**: Patches SQLAlchemy execute methods; detects vector operators (`<=>`, `<->`, `<#>`); buffers rows into VectorQueryEvent. Caller still iterates normally.
 15. **Conversation DAG via parent_request_id**: Links child LLM calls to parent requests. `bus.start_conversation()` creates conversation_id for grouping. `chain_step` labels role (e.g., "agent", "tool_use").
 16. **3-tier chunk removal fallback**: Handles truncated/reformatted chunks in perturbation. Exact match → 120-char prefix → first-sentence fallback.
+17. **GraphRAG community attribution via semantic similarity**: GraphRAG global search has no discrete retrieved chunks — only synthesized community reports. Attributing hallucinations by cosine similarity (hallucinated sentence vs. community text) solves this without extra LLM calls. Community with highest similarity to the hallucinated content most likely "inspired" the distortion. Zero extra API calls; uses the sentence-transformers model already loaded for detection.
 
 ## Testing Strategy
 
