@@ -39,6 +39,7 @@
 
 ## Known Issues / Gotchas
 
+- **Modern transformers require attn_implementation='eager'**: SDPA (default) returns `None` for attentions. Load models with `attn_implementation='eager'` and `output_attentions=True` for token heatmap to work.
 - **ContextVar session isolation**: `_active_session_var` is a `ContextVar` — each asyncio task/thread gets its own session. Tests that call `asyncio.run()` create a fresh context; use `bus.all_sessions()` to find events rather than relying on the pre-created session.
 - **Attribution queue is bounded**: `ThreadPoolExecutor(max_workers=3)` with `Semaphore(50)` pending limit. Under extreme load, tasks are dropped. Check DEBUG logs for "Attribution queue full" messages.
 - **httpx_transport.py intercepts ALL httpx traffic**: If you have custom httpx clients pointing to local/private LLM endpoints, add the hostname to `_LLM_HOSTS` in `httpx_transport.py`.
@@ -57,6 +58,13 @@
 - **pgvector interceptor buffers rows**: SQLAlchemy result is fully fetched into memory. For very large result sets (1000+ rows), this adds memory overhead. The interceptor only activates for queries containing `<=>`, `<->`, or `<#>` operators.
 - **Streaming token counts are approximate**: Streaming responses don't include exact token counts in SSE chunks. VectorLens estimates completion_tokens from word count. Prompt tokens unavailable for streamed responses.
 - **Conversation DAG is opt-in**: Call `bus.start_conversation()` to get a `conversation_id`. The DAG is built from `parent_request_id` fields; without explicit linking, multi-turn looks like isolated calls.
+- **ChromaDB EphemeralClient hangs**: Don't use `chromadb.Client(settings=Settings(is_persistent=False))` with VectorLens active. Pre-compute embeddings instead.
+- **pgvector interceptor: call vectorlens.serve() first**: Patch AsyncSession/Session before importing from `sqlalchemy.ext.asyncio`.
+- **GraphRAG interceptor silently skips if graphrag not installed**: No warning emitted. If GraphRAG queries aren't being captured, verify `pip install graphrag` and check `get_installed()`.
+- **GraphRAG LocalSearch text_chunks all have score=1.0**: `build_context()` doesn't expose per-chunk similarity; all text units treated as equally retrieved.
+- **GraphRAG GlobalSearch attribution uses semantic similarity, not perturbation**: Community reports are scored by cosine similarity to hallucinated sentences. This is Tier 1 (zero LLM calls). Tier 2 (reduce-stage perturbation) is not yet implemented.
+- **Token boundary alignment**: Pass `add_special_tokens=True` explicitly to ensure BOS/EOS token indices match between tokenizer calls.
+- **SQLAlchemy 2.x with asyncpg**: Use `text().bindparams(**params)` instead of `session.execute(query, params)`.
 
 ## Testing Strategy
 

@@ -15,6 +15,12 @@ export interface OutputToken {
   chunk_attributions: Record<string, number>;
 }
 
+export interface TokenHeatmapEntry {
+  text: string;
+  position: number;
+  chunk_attributions: Record<string, number>;
+}
+
 export interface AttributionResult {
   id: string;
   session_id: string;
@@ -22,13 +28,19 @@ export interface AttributionResult {
   output_tokens: OutputToken[];
   overall_groundedness: number;
   hallucinated_spans: [number, number][];
+  token_heatmap?: TokenHeatmapEntry[];
 }
 
 export interface VectorQuery {
   id: string;
-  query: string;
+  session_id: string;
   timestamp: number;
-  vector_model: string;
+  db_type: string;
+  collection: string;
+  query_text: string;
+  query_embedding: number[];
+  top_k: number;
+  results: RetrievedChunk[];
 }
 
 export interface LLMRequest {
@@ -89,6 +101,13 @@ export async function fetchSession(id: string): Promise<Session> {
   } catch (error) {
     console.error(`Error fetching session ${id}:`, error);
     throw error;
+  }
+}
+
+export async function deleteAllSessions(): Promise<void> {
+  const response = await fetch(`${API_BASE}/sessions`, { method: 'DELETE' });
+  if (!response.ok) {
+    throw new Error(`Failed to clear sessions: ${response.statusText}`);
   }
 }
 

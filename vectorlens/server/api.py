@@ -178,6 +178,14 @@ class LLMResponseEventData(BaseModel):
         )
 
 
+class TokenHeatmapEntryData(BaseModel):
+    """Data model for a single output subword token in the attention heatmap."""
+
+    text: str
+    position: int
+    chunk_attributions: dict[str, float] = Field(default_factory=dict)
+
+
 class AttributionData(BaseModel):
     """Data model for attribution results."""
 
@@ -190,6 +198,7 @@ class AttributionData(BaseModel):
     output_tokens: list[OutputTokenData] = Field(default_factory=list)
     overall_groundedness: float
     hallucinated_spans: list[tuple[int, int]] = Field(default_factory=list)
+    token_heatmap: list[TokenHeatmapEntryData] = Field(default_factory=list)
 
     @staticmethod
     def from_result(result: AttributionResult) -> AttributionData:
@@ -222,6 +231,14 @@ class AttributionData(BaseModel):
             ],
             overall_groundedness=result.overall_groundedness,
             hallucinated_spans=result.hallucinated_spans,
+            token_heatmap=[
+                TokenHeatmapEntryData(
+                    text=e.text,
+                    position=e.position,
+                    chunk_attributions=e.chunk_attributions,
+                )
+                for e in getattr(result, "token_heatmap", [])
+            ],
         )
 
 
@@ -384,6 +401,12 @@ async def create_session() -> SessionSummary:
     """Create a new session and set it as active."""
     session = bus.new_session()
     return SessionSummary.from_session(session)
+
+
+@router.delete("/sessions", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_all_sessions() -> None:
+    """Delete all sessions."""
+    bus.clear_all_sessions()
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

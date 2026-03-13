@@ -14,6 +14,7 @@ from vectorlens.interceptors.anthropic_patch import AnthropicInterceptor
 from vectorlens.interceptors.chroma_patch import ChromaInterceptor
 from vectorlens.interceptors.faiss_patch import FAISSInterceptor
 from vectorlens.interceptors.gemini_patch import GeminiInterceptor
+from vectorlens.interceptors.graphrag_patch import GraphRAGInterceptor
 from vectorlens.interceptors.httpx_transport import HttpxTransportInterceptor
 from vectorlens.interceptors.langchain_patch import LangChainInterceptor
 from vectorlens.interceptors.openai_patch import OpenAIInterceptor
@@ -35,6 +36,7 @@ _INTERCEPTORS: dict[str, Any] = {
     "transformers": TransformersInterceptor(),
     "weaviate": WeaviateInterceptor(),
     "pgvector": PGVectorInterceptor(),
+    "graphrag": GraphRAGInterceptor(),
 }
 
 _lock = threading.Lock()

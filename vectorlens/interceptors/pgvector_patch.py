@@ -29,9 +29,13 @@ def _get_sql_string(statement: Any) -> str:
     """Extract SQL string from various SQLAlchemy statement types."""
     if isinstance(statement, str):
         return statement
-    # TextClause (from text(...))
+    # TextClause (from text(...)) — .text holds the raw SQL string
     if hasattr(statement, "text"):
         return str(statement.text)
+    # BoundTextClause (from text(...).bindparams(...))
+    # SQLAlchemy wraps the TextClause; the inner clause is accessible via ._clause
+    if hasattr(statement, "_clause") and hasattr(statement._clause, "text"):
+        return str(statement._clause.text)
     # Compiled query objects
     try:
         return str(statement)
@@ -211,10 +215,10 @@ def _make_async_wrapper(original_execute: Callable) -> Callable:
 
     @functools.wraps(original_execute)
     async def patched_async_execute(
-        self: Any, statement: Any, parameters: Any = None, **kwargs: Any
+        self: Any, statement: Any, params: Any = None, **kwargs: Any
     ) -> Any:
         start = time.time()
-        result = await original_execute(self, statement, parameters, **kwargs)
+        result = await original_execute(self, statement, params, **kwargs)
 
         try:
             sql_str = _get_sql_string(statement)
@@ -254,10 +258,10 @@ def _make_sync_wrapper(original_execute: Callable) -> Callable:
 
     @functools.wraps(original_execute)
     def patched_sync_execute(
-        self: Any, statement: Any, parameters: Any = None, **kwargs: Any
+        self: Any, statement: Any, params: Any = None, **kwargs: Any
     ) -> Any:
         start = time.time()
-        result = original_execute(self, statement, parameters, **kwargs)
+        result = original_execute(self, statement, params, **kwargs)
 
         try:
             sql_str = _get_sql_string(statement)

@@ -197,8 +197,167 @@ Red-teamed across backend, interceptors, and frontend. All critical/high issues 
 
 ---
 
+## Issue #8: Token-Level Attribution — COMPLETED
+
+**What was built:**
+- `TokenHeatmapEntry` dataclass in `vectorlens/types.py` — per-token scores with text, `chunk_attributions` dict
+- `token_heatmap: list[TokenHeatmapEntry]` field added to `AttributionResult`
+- `AttentionAttributor.compute_per_token()` — runs full [prompt+output] sequence, returns per-output-subword-token chunk attribution
+- `pipeline.py::_run_attribution()` now calls `compute_per_token()` when local HF model available
+- Dashboard `OutputHighlighter.tsx` toggle between "Token heatmap" and "Sentence view"
+- `attn_implementation='eager'` required (SDPA returns None)
+- OOM guard: skip token heatmap for sequences > 4096 tokens
+- `tokenizer.convert_tokens_to_string()` used (replaces manual marker stripping)
+- `_get_char_to_token_mapping()` accepts explicit `add_special_tokens` param
+- None entries in offset_mapping handled (fast tokenizers return None for special tokens)
+- `groundedColor` minimum alpha 30/255 so zero-score tokens stay visible
+- 67 tests passing; new tests in `tests/test_attention_attribution.py`
+
+---
+
+## Critical Gotchas — Issue #8 & Beyond
+
+### Modern Transformers Defaults to SDPA
+
+Modern HuggingFace transformers default to `attn_implementation='sdpa'` (flash attention), which optimizes for speed but **returns `None` for attentions**. For token heatmap:
+
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    "distilgpt2",
+    attn_implementation='eager',  # REQUIRED — use original attention mechanism
+    output_attentions=True         # Ensure attention weights are computed
+)
+```
+
+Without `eager`, `AttentionAttributor.compute_per_token()` receives `None` and falls back gracefully. Document this prominently in token heatmap feature announcement.
+
+### ChromaDB EphemeralClient Hangs with VectorLens Interceptor
+
+**Symptom**: `chromadb.Client(settings=Settings(is_persistent=False))` (in-memory ephemeral) hangs indefinitely when VectorLens interceptor is active.
+
+**Root cause**: ChromaDB's ephemeral client spins up SQLite in-memory DB. VectorLens patches ChromaDB's `Collection.query()` — if the patch calls async methods or blocks, the SQLite connection can deadlock.
+
+**Workaround**: Pre-compute embeddings and pass vectors directly:
+```python
+# ✗ DON'T: chromadb.Client(...)
+# ✓ DO:
+from sentence_transformers import SentenceTransformer
+embeddings = SentenceTransformer('...').encode(texts)
+chromadb.query(embeddings=embeddings)  # Pass vectors explicitly
+```
+
+For persistent collections, the issue doesn't occur.
+
+### pgvector Interceptor Requires AsyncSession Patch BEFORE Imports
+
+**Symptom**: pgvector queries return no results; vectorlens logs show no `VectorQueryEvent`.
+
+**Root cause**: SQLAlchemy 2.x loads `AsyncSession` at import time. VectorLens patches methods in `__init__`. If you import AsyncSession before calling `vectorlens.serve()`, the original (unpatched) class is used.
+
+**Fix**: Always call `vectorlens.serve()` FIRST, before importing `sqlalchemy.ext.asyncio.AsyncSession`:
+
+```python
+import vectorlens
+vectorlens.serve()  # Install all interceptors
+
+# NOW import SQLAlchemy
+from sqlalchemy.ext.asyncio import AsyncSession
+```
+
+Or explicitly pre-patch:
+```python
+from vectorlens.interceptors import PgVectorInterceptor
+PgVectorInterceptor().install()
+```
+
+### Token Boundary Alignment: add_special_tokens Must Be Explicit
+
+**Symptom**: Token indices don't align; special tokens (BOS/EOS) get skipped in attention heatmap.
+
+**Root cause**: `tokenizer(text)` vs `tokenizer(text, add_special_tokens=True)` can produce different token counts. When computing attention weights vs offset_mapping, indices mismatch.
+
+**Fix**: Pass `add_special_tokens=True` explicitly in both calls:
+
+```python
+tokens = tokenizer(prompt + output, add_special_tokens=True, return_offsets_mapping=True)
+# Ensure _get_char_to_token_mapping() also receives add_special_tokens=True
+```
+
+The `_get_char_to_token_mapping()` function now accepts an explicit `add_special_tokens` parameter to enforce alignment.
+
+### Use `text().bindparams(**params)` for SQLAlchemy 2.x with asyncpg
+
+**Symptom**: `session.execute(query, params)` fails or behaves inconsistently with asyncpg driver in SQLAlchemy 2.x.
+
+**Root cause**: SQLAlchemy 2.x separates compile-time params from bind-time params. asyncpg requires all params bound at compile time.
+
+**Fix**: Use `text().bindparams()`:
+
+```python
+# ✗ DON'T:
+result = await session.execute(text("SELECT * FROM table WHERE id = :id"), {"id": 42})
+
+# ✓ DO:
+from sqlalchemy import text
+query = text("SELECT * FROM table WHERE id = :id").bindparams(id=42)
+result = await session.execute(query)
+```
+
+---
+
+---
+
+## GraphRAG Support — 2026-03-12
+
+### Problem: attribution for GlobalSearch has no discrete retrieval units
+
+Standard RAG returns text chunks from a vector DB — easy to attribute. GraphRAG's GlobalSearch uses map-reduce over community reports (LLM-synthesized summaries). There's no chunk to remove and re-query. This was an open research problem.
+
+**Solution: community reports as attribution units + semantic similarity scoring**
+
+- Community reports ARE discrete — `GlobalSearchCommunityContext.build_context()` selects N of them
+- For a hallucinated sentence H and community C: `cosine_sim(embed(H), embed(C.text))` is a meaningful attribution signal — the community that provided the most "relevant but distorted" context will be semantically closest to what the LLM hallucinated
+- This requires zero extra LLM calls (reuses the sentence-transformers model already loaded)
+- Attribution scores normalized to [0,1]; `caused_hallucination` flagged at > 0.5 post-normalization
+
+**Implementation**:
+- `interceptors/graphrag_patch.py`: patches `LocalSearchMixedContext.build_context()` and `GlobalSearchCommunityContext.build_context()`. Extracts text units (local) or community reports (global) and emits `GraphRAGContextEvent` to the bus.
+- `attribution/graphrag_attribution.py`: `CommunityAttributor.attribute()` — cosine similarity over hallucinated sentences vs. community texts. Max-pooling across sentences.
+- `pipeline.py::_run_graphrag_global_attribution()` — new branch for global search: uses `HallucinationDetector` with community texts as pseudo-chunks, then `CommunityAttributor` for attribution. Serialized as `RetrievedChunk` with `metadata["type"]="graphrag_community"` for API compatibility.
+- `types.py`: `GraphRAGCommunityUnit`, `GraphRAGContextEvent`, `Session.graphrag_contexts`
+- `session_bus.py`: `record_graphrag_context()`
+
+**Interception strategy for LocalSearch**:
+Source text units live in `context_data["sources"]` or `context_data["text_units"]` from `build_context()`. Flattened to `RetrievedChunk` objects → existing LIME pipeline works unchanged.
+
+**Community report object format is version-dependent**: graphrag's `CommunityReport` dataclass uses `summary` or `full_content` field depending on version. `_community_unit_from_report()` handles dict, dataclass, and string via attribute priority chain.
+
+**Context string parsing fallback**: If `context_data` dict doesn't contain community reports in an expected key, `_parse_community_sections()` parses the formatted context string. Supports `## Header` sections and `---` separator blocks.
+
+### Gotchas
+
+- **graphrag is not installed by default**: `GraphRAGInterceptor.install()` silently skips on `ImportError`. No warning emitted — user must `pip install graphrag`.
+- **GlobalSearch makes concurrent map LLM calls**: httpx transport captures these as individual `LLMResponseEvent` entries. They appear as multiple LLM calls per query in the session. Expected behavior.
+- **Community report text may be truncated**: GraphRAG may store summaries vs full_content — `_community_unit_from_report()` prefers `summary` for brevity in attribution UI.
+- **Local search text_chunks get score=1.0**: GraphRAG doesn't expose per-chunk similarity scores from `build_context()`. All text units are treated as equally retrieved.
+- **Pipeline priority**: `session.graphrag_contexts` takes priority over `session.vector_queries` in `_run_attribution()`. If a session has both (unusual), GraphRAG context wins.
+
+### Future: Reduce-Stage Perturbation (Tier 2)
+
+For even more accurate global search attribution:
+1. Capture the reduce LLM call from httpx (messages contain all map responses)
+2. Remove one community's section from the reduce messages
+3. Re-run reduce LLM call, measure output change
+4. High change → high attribution
+
+This costs K extra LLM calls (one per candidate community) but is more accurate than similarity. Not implemented in v1 — similarity already solves the discrete-unit problem.
+
+---
+
 ## 🗺️ Immediate Roadmap (Next Steps)
 
-1.  **Fix Streaming Support:** Update httpx interceptor to handle `text/event-stream` responses.
-2.  **Fix Perturbation Robustness:** Re-write the string replacement logic in `perturbation.py` to be regex/semantic-aware.
-3.  **UI Data Binding:** Connect the React frontend over WebSockets to actually consume the `LLMResponseEvent` and `AttributionResult` payloads.
+1. **GraphRAG dashboard display** — ChunkCard.tsx should render `metadata["type"]="graphrag_community"` differently (show community title, entity count, not just chunk text).
+2. **Broadcast token heatmap feature** — update README, changelog, documentation.
+3. **Streaming edge cases** — test token heatmap with streaming responses.
+4. **Perturbation robustness** — investigate chunk removal failures with real RAG pipelines.
+5. **GraphRAG Tier 2 attribution** — reduce-stage perturbation for higher accuracy global search attribution.

@@ -192,6 +192,3 @@ class HallucinationDetector:
 
         return output_tokens
 
-
-# Global singleton instance
-detector = HallucinationDetector()

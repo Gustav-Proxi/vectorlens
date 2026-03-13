@@ -26,6 +26,7 @@ from typing import Callable
 
 from vectorlens.types import (
     AttributionResult,
+    GraphRAGContextEvent,
     LLMRequestEvent,
     LLMResponseEvent,
     Session,
@@ -110,6 +111,15 @@ class SessionBus:
     def all_sessions(self) -> list[Session]:
         return list(self._sessions.values())
 
+    def clear_all_sessions(self) -> int:
+        """Delete all sessions. Returns count of deleted sessions."""
+        with self._lock:
+            count = len(self._sessions)
+            self._sessions.clear()
+            self._session_order.clear()
+            _active_session_var.set(None)
+            return count
+
     def delete_session(self, session_id: str) -> bool:
         """Delete a session. Returns True if found and deleted."""
         with self._lock:
@@ -176,6 +186,13 @@ class SessionBus:
             result.session_id = session.id
             session.attributions.append(result)
         self._notify("attribution", result)
+
+    def record_graphrag_context(self, event: GraphRAGContextEvent) -> None:
+        with self._lock:
+            session = self._resolve_session(event.session_id)
+            event.session_id = session.id
+            session.graphrag_contexts.append(event)
+        self._notify("graphrag_context", event)
 
     # ------------------------------------------------------------------
     # Pub/sub

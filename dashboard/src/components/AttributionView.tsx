@@ -126,6 +126,21 @@ export const AttributionView: React.FC<AttributionViewProps> = ({
             <span className="text-xs text-[#6a6a6a] ml-3">
               {session.vector_queries?.length ?? 0} queries · {session.llm_responses?.length ?? 0} responses · {sortedChunks.length} chunks
             </span>
+            {(session.vector_queries?.length ?? 0) > 0 && (
+              <div className="mt-1.5 pl-0 flex flex-col gap-0.5">
+                {session.vector_queries!.map((q, i) => (
+                  <div key={q.id} className="flex items-baseline gap-2">
+                    <span className="text-xs text-[#4a4a4a] flex-shrink-0">Q{i + 1}</span>
+                    <span className="text-xs font-mono text-[#8a8a8a] break-words" title={q.query_text}>
+                      {q.query_text || `<embedding ${q.db_type}>`}
+                    </span>
+                    {q.collection && (
+                      <span className="text-xs text-[#4a4a4a] flex-shrink-0">· {q.collection}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Groundedness pill */}
@@ -209,6 +224,7 @@ export const AttributionView: React.FC<AttributionViewProps> = ({
             <div className="bg-[#1a1a1a] rounded p-4 border border-[#2a2a2a]">
               <OutputHighlighter
                 tokens={attribution.output_tokens}
+                tokenHeatmap={attribution.token_heatmap}
                 onChunkHover={setHoveredChunkId}
               />
             </div>

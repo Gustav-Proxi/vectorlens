@@ -18,6 +18,7 @@ class EventType(str, Enum):
     VECTOR_RESULTS = "vector_results"
     ATTRIBUTION_COMPUTED = "attribution_computed"
     HALLUCINATION_DETECTED = "hallucination_detected"
+    GRAPHRAG_CONTEXT = "graphrag_context"
 
 
 @dataclass
@@ -99,6 +100,19 @@ class OutputToken:
 
 
 @dataclass
+class TokenHeatmapEntry:
+    """A single output subword token with per-chunk attention attribution.
+
+    Populated by AttentionAttributor.compute_per_token() for local HF models.
+    Each entry corresponds to one transformer subword token in the output.
+    """
+    text: str = ""          # decoded subword token text (spaces preserved)
+    position: int = 0       # 0-based index in the output token sequence
+    # chunk_id -> normalized attention weight [0, 1]
+    chunk_attributions: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class AttributionResult:
     """Result of running attribution on an LLM response."""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -110,6 +124,46 @@ class AttributionResult:
     output_tokens: list[OutputToken] = field(default_factory=list)
     overall_groundedness: float = 0.0   # 0-1, 1 = fully grounded
     hallucinated_spans: list[tuple[int, int]] = field(default_factory=list)  # (start, end) token indices
+    # Per-subword-token heatmap — set only when a local HF model is available.
+    # Empty list means sentence-level detection only (default for API models).
+    token_heatmap: list[TokenHeatmapEntry] = field(default_factory=list)
+
+
+@dataclass
+class GraphRAGCommunityUnit:
+    """A community report used as attribution unit for GraphRAG global search.
+
+    Global search has no discrete retrieved chunks — it uses LLM-synthesized
+    community reports. This type makes community reports first-class attribution
+    units, enabling semantic similarity attribution.
+    """
+    unit_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    community_id: str = ""
+    title: str = ""
+    text: str = ""          # Full community report text
+    rank: float = 0.0       # Relevance rank from GraphRAG (higher = more relevant)
+    # Set after attribution
+    attribution_score: float = 0.0   # 0-1, how much this community caused the output
+    caused_hallucination: bool = False
+
+
+@dataclass
+class GraphRAGContextEvent:
+    """Fired when GraphRAG assembles context for a local or global search call.
+
+    Captures the exact units passed to the LLM so attribution can trace
+    output sentences back to community reports (global) or text chunks (local).
+    """
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str = ""
+    timestamp: float = field(default_factory=time.time)
+    search_type: str = ""           # "local" or "global"
+    query: str = ""
+    context_text: str = ""          # Full formatted context string sent to LLM
+    # Local search: source text units as standard chunks
+    text_chunks: list[RetrievedChunk] = field(default_factory=list)
+    # Global search: community reports as attribution units
+    community_units: list[GraphRAGCommunityUnit] = field(default_factory=list)
 
 
 @dataclass
@@ -121,6 +175,7 @@ class Session:
     llm_requests: list[LLMRequestEvent] = field(default_factory=list)
     llm_responses: list[LLMResponseEvent] = field(default_factory=list)
     attributions: list[AttributionResult] = field(default_factory=list)
+    graphrag_contexts: list[GraphRAGContextEvent] = field(default_factory=list)
     conversation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     # Per-session HF model reference — set by TransformersInterceptor so
     # attention attribution uses the correct model in concurrent servers
