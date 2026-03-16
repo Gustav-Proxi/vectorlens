@@ -50,7 +50,31 @@ def main() -> None:
         action="store_true",
         help="Do not auto-install interceptors",
     )
+    # share subcommand
 
+    share_parser = subparsers.add_parser(
+        "share",
+        help="Export a session as a self-contained HTML file",
+    )
+    share_parser.add_argument(
+        "session_id",
+        help="Session ID to export",
+    )
+    share_parser.add_argument(
+        "--output",
+        default=None,
+        help="Output file path (default: share-<id[:8]>.html)",
+    )
+    share_parser.add_argument(
+        "--open",
+        action="store_true",
+        help="Open the generated file in the browser",
+    )
+    share_parser.add_argument(
+        "--copy",
+        action="store_true",
+        help="Print the data URI to stdout",
+    )
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -77,9 +101,29 @@ def main() -> None:
             logger.info("Shutting down...")
             vectorlens.stop()
             sys.exit(0)
+    elif args.command == "share":
+        import requests
+        from pathlib import Path
+        from vectorlens.share import share_session
+
+        host = "127.0.0.1"
+        port = 7756
+        url = f"http://{host}:{port}/api/sessions/{args.session_id}"
+        try:
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            session = resp.json()
+        except Exception as e:
+            logger.error(f"Could not fetch session: {e}")
+            sys.exit(1)
+
+        output = Path(args.output) if args.output else None
+        path = share_session(
+            session,
+            output_path=output,
+            open_browser=args.open,
+            copy_uri=args.copy,
+        )
+        print(f"Saved to {path}")
     else:
         parser.print_help()
-
-
-if __name__ == "__main__":
-    main()
